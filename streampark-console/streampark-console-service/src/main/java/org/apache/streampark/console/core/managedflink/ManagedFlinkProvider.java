@@ -37,7 +37,15 @@ public interface ManagedFlinkProvider {
     return true;
   }
 
+  default boolean permitsServerCredential(long team, String account) {
+    return false;
+  }
+
   Map<String, String> capabilities(Context context);
+
+  default Map<String, String> probe(Context context) {
+    return capabilities(context);
+  }
 
   default List<Action> publishSteps(JobType type, boolean hasDraft) {
     List<Action> steps = new ArrayList<>();

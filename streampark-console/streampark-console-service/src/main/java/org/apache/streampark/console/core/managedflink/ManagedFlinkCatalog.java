@@ -157,7 +157,7 @@ public class ManagedFlinkCatalog {
     Map<String, Object> environment = environment(team, env, false);
     Map<String, Object> connection = connection(team, text(environment, "connection_id"));
     Map<String, String> report =
-        provider(text(connection, "provider")).capabilities(context(connection, environment, null));
+        provider(text(connection, "provider")).probe(context(connection, environment, null));
     ReadReport reads = new ReadReport();
     for (String capability : PROBED_READ_CAPABILITIES) {
       if (report.containsKey(capability)) {
@@ -204,8 +204,8 @@ public class ManagedFlinkCatalog {
         HttpStatus.CONFLICT,
         "Cloud account must match");
     Credentials candidate = supplied(input);
-    Context context = new Context(text(env, "region"), account, target(env), candidate);
-    Map<String, String> report = provider(provider).capabilities(context);
+    Context context = new Context(team, text(env, "region"), account, target(env), candidate);
+    Map<String, String> report = provider(provider).probe(context);
     check(
         "AVAILABLE".equals(report.get("IDENTITY")),
         HttpStatus.UNPROCESSABLE_ENTITY,
@@ -319,7 +319,12 @@ public class ManagedFlinkCatalog {
     return new LinkedHashMap<>(
         provider(text(conn, "provider"))
             .capabilities(
-                new Context(text(env, "region"), text(conn, "account_ref"), target(env), null)));
+                new Context(
+                    number(env, "team_id"),
+                    text(env, "region"),
+                    text(conn, "account_ref"),
+                    target(env),
+                    null)));
   }
 
   Map<String, Object> connection(long team, String id) {
@@ -343,6 +348,7 @@ public class ManagedFlinkCatalog {
     String id = text(connection, "id");
     String account = text(connection, "account_ref");
     return new Context(
+        team,
         text(environment, "region"),
         account,
         frozen == null ? target(environment) : frozen,
@@ -367,7 +373,11 @@ public class ManagedFlinkCatalog {
 
   private String seal(
       long team, String id, String account, String provider, ConnectionInput input) {
-    if (!provider(provider).requiresCredentials()) {
+    ManagedFlinkProvider adapter = provider(provider);
+    if (!adapter.requiresCredentials()
+        || (input.getAccessKey() == null
+            && input.getSecretKey() == null
+            && adapter.permitsServerCredential(team, account))) {
       return null;
     }
     return credentials.seal(binding(team, id, account), supplied(input));

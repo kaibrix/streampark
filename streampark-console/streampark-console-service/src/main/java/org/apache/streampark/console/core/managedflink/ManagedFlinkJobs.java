@@ -201,7 +201,8 @@ public class ManagedFlinkJobs {
     Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
     ManagedFlinkProvider provider = catalog.provider(text(conn, "provider"));
     Target target = catalog.target(env);
-    Context context = new Context(text(env, "region"), text(conn, "account_ref"), target, null);
+    Context context =
+        new Context(team, text(env, "region"), text(conn, "account_ref"), target, null);
     Map<String, String> capabilities = provider.capabilities(context);
     FrozenCommand frozen = new FrozenCommand();
     frozen.setRequest(cmd);
@@ -269,6 +270,10 @@ public class ManagedFlinkJobs {
         "Environment configuration changed");
     long revision = number(job, "draft_revision");
     Spec spec;
+    String priorRelease = text(job, "active_release_id");
+    if (priorRelease != null) {
+      frozen.setProviderVersion(text(release(app, priorRelease), "provider_version"));
+    }
     if (type == CommandType.ROLLBACK) {
       Map<String, Object> old = release(app, cmd.getSourceReleaseId());
       check(

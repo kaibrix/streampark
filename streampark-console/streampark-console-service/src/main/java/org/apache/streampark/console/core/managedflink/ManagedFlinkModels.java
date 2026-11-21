@@ -175,10 +175,24 @@ public final class ManagedFlinkModels {
 
   @Data
   public static class Context {
+    private final long teamId;
     private final String region;
     private final String accountRef;
     private final Target target;
     private final Credentials credentials;
+
+    public Context(String region, String accountRef, Target target, Credentials credentials) {
+      this(-1, region, accountRef, target, credentials);
+    }
+
+    public Context(
+        long teamId, String region, String accountRef, Target target, Credentials credentials) {
+      this.teamId = teamId;
+      this.region = region;
+      this.accountRef = accountRef;
+      this.target = target;
+      this.credentials = credentials;
+    }
 
     @Override
     public String toString() {
