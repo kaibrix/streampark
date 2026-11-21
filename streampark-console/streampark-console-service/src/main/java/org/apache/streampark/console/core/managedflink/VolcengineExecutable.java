@@ -29,10 +29,12 @@ import com.google.gson.JsonParser;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
 
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.text;
@@ -101,9 +103,34 @@ final class VolcengineExecutable {
               if (key.startsWith("execution.checkpointing.")) {
                 return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
               }
+              if ("pipeline.global-job-parameters".equals(key)) {
+                return spec.getType() == JobType.SQL && globalJobParameters(value);
+              }
               return key.startsWith("containerized.")
                   || (BASE64_ARGS.equals(key) && spec.getType() == JobType.JAR);
             });
+  }
+
+  private static boolean globalJobParameters(String encoded) {
+    // Use the common map syntax understood by all three supported engines.
+    Set<String> keys = new HashSet<>();
+    for (String entry : encoded.split(",", -1)) {
+      int separator = entry.indexOf(':');
+      if (separator == -1 || separator != entry.lastIndexOf(':')) {
+        return false;
+      }
+      String key = entry.substring(0, separator);
+      String value = entry.substring(separator + 1);
+      if (!key.matches("[A-Za-z_][A-Za-z0-9_.-]{0,63}")
+          || !keys.add(key)
+          || value.isEmpty()
+          || !value.equals(value.trim())
+          || value.indexOf('\'') != -1
+          || value.indexOf('"') != -1) {
+        return false;
+      }
+    }
+    return true;
   }
 
   static boolean hasSupportedArgs(Spec spec) {

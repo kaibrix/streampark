@@ -17,12 +17,23 @@
 
 package org.apache.streampark.acceptance;
 
+import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.ScalarFunction;
 
 public class LabelFunction extends ScalarFunction {
+  private transient String runLabel;
+  private transient String tenant;
+
+  @Override
+  public void open(FunctionContext context) {
+    runLabel = context.getJobParameter("acceptance.run-label", "missing");
+    tenant = context.getJobParameter("acceptance.tenant", "missing");
+  }
+
   public String eval(Long value) {
     return value == null
         ? null
-        : "udf-jar-verified:" + value + ":tm=" + System.getenv("STREAM_PARK_ACCEPTANCE_TM");
+        : "udf-jar-verified:" + value + ":tm=" + System.getenv("STREAM_PARK_ACCEPTANCE_TM")
+            + ":run=" + runLabel + ":tenant=" + tenant;
   }
 }

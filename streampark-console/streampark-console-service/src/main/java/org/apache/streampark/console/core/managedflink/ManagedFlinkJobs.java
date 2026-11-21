@@ -686,6 +686,8 @@ public class ManagedFlinkJobs {
                     entry ->
                         entry.getKey() != null
                             && (allowed.contains(entry.getKey())
+                                || ("pipeline.global-job-parameters".equals(entry.getKey())
+                                    && spec.getType() == JobType.SQL)
                                 || ("args.base64.enabled".equals(entry.getKey())
                                     && spec.getType() == JobType.JAR)
                                 || entry

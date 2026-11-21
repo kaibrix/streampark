@@ -52,6 +52,13 @@ class VolcengineExecutableTest {
   private void checkSqlManifest(String engine) {
     OperationStep step = step(engine, JobType.SQL);
     step.getCommand().getSpec().setUdfArtifactId("fixture-udf");
+    step.getCommand()
+        .getSpec()
+        .getConfiguration()
+        .put(
+            "pipeline.global-job-parameters",
+            "acceptance.run-label:sql-smoke,acceptance.tenant:租户 beta");
+    assertThat(VolcengineExecutable.supportedConfiguration(step.getCommand().getSpec())).isTrue();
     JsonObject draft = new JsonObject();
     draft.addProperty("JobType", "FLINK_STREAMING_SQL");
     draft.addProperty("EngineVersion", engine);
@@ -77,6 +84,9 @@ class VolcengineExecutableTest {
     assertThat(VolcengineExecutable.revision(running))
         .isEqualTo(VolcengineExecutable.revision(published));
     assertThat(VolcengineExecutable.matches(running, step, false)).isTrue();
+    JsonObject configDrift = published.deepCopy();
+    configDrift.getAsJsonObject("Conf").remove("pipeline.global-job-parameters");
+    assertThat(VolcengineExecutable.matches(configDrift, step, false)).isFalse();
     JsonObject changedDraft = draft.deepCopy();
     JsonObject dynamic = VolcengineExecutable.objectValue(changedDraft.get("DynamicOptions"));
     dynamic.addProperty("containerized.taskmanager.env.OUT_OF_BAND", "unexpected");
@@ -84,6 +94,15 @@ class VolcengineExecutableTest {
     assertThat(VolcengineExecutable.matches(changedDraft, step, true)).isFalse();
     jars.add("tos://fixture-bucket/test/external-jar.jar");
     assertThat(VolcengineExecutable.matches(published, step, false)).isFalse();
+  }
+
+  @Test
+  void rejectsMalformedVolcengineSqlGlobalParameters() {
+    Spec spec = step("FLINK_VERSION_1_17", JobType.SQL).getCommand().getSpec();
+    for (String encoded : Arrays.asList("run", "run:", "run:one,run:two", "run:one,two", "a:b:c")) {
+      spec.getConfiguration().put("pipeline.global-job-parameters", encoded);
+      assertThat(VolcengineExecutable.supportedConfiguration(spec)).as(encoded).isFalse();
+    }
   }
 
   @Test

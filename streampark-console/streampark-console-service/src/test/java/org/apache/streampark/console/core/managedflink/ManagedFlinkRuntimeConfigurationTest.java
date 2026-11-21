@@ -53,6 +53,7 @@ class ManagedFlinkRuntimeConfigurationTest {
   private static final long TEAM = 100000L;
   private static final long APP = 900401L;
   private static final String CHECKPOINT = "execution.checkpointing.interval";
+  private static final String SQL_PARAMS = "pipeline.global-job-parameters";
   private static final String TM_ENV = "containerized.taskmanager.env.STREAM_PARK_ACCEPTANCE_TM";
   private static final String JM_ENV = "containerized.master.env.STREAM_PARK_ACCEPTANCE_JM";
   private static final List<String> JAR_ARGS = Arrays.asList("--label", "words with spaces", "中文");
@@ -61,7 +62,7 @@ class ManagedFlinkRuntimeConfigurationTest {
   void sqlRuntimeConfigSurvivesSnapshotRestore() {
     Fixture fixture = new Fixture(new MockManagedFlinkProvider());
     Spec spec = sql();
-    spec.setConfiguration(runtimeConfig());
+    spec.setConfiguration(sqlRuntimeConfig());
     verifyFrozenRestore(fixture, spec, RestoreMode.FROM_SNAPSHOT);
   }
 
@@ -69,7 +70,7 @@ class ManagedFlinkRuntimeConfigurationTest {
   void sqlLatestRestorePinsTheNewestCompatibleSnapshot() {
     Fixture fixture = new Fixture(new MockManagedFlinkProvider());
     Spec spec = sql();
-    spec.setConfiguration(runtimeConfig());
+    spec.setConfiguration(sqlRuntimeConfig());
     verifyFrozenRestore(fixture, spec, RestoreMode.FROM_LATEST);
   }
 
@@ -117,6 +118,7 @@ class ManagedFlinkRuntimeConfigurationTest {
   }
 
   private FrozenCommand verifyFrozenRestore(Fixture fixture, Spec spec, RestoreMode mode) {
+    Map<String, String> configured = new LinkedHashMap<>(spec.getConfiguration());
     fixture.jobs.validateDraft(TEAM, APP, spec);
     edit(fixture, spec, 1L);
     Command publish = fixture.command();
@@ -125,11 +127,13 @@ class ManagedFlinkRuntimeConfigurationTest {
     fixture.complete(publication);
     FrozenCommand releaseCommand = frozen(fixture, publication);
     String release = fixture.jobField("active_release_id");
-    assertThat(releaseCommand.getSpec().getConfiguration()).isEqualTo(runtimeConfig());
+    assertThat(releaseCommand.getSpec().getConfiguration()).isEqualTo(configured);
 
     spec.getConfiguration().put(TM_ENV, "draft-only-value");
     if (spec.getType() == JobType.JAR) {
       spec.setArgs(Collections.singletonList("draft-only-argument"));
+    } else {
+      spec.getConfiguration().put(SQL_PARAMS, "acceptance.run-label:draft-only");
     }
     edit(fixture, spec, 2L);
 
@@ -217,6 +221,12 @@ class ManagedFlinkRuntimeConfigurationTest {
     config.put(CHECKPOINT, "4 s");
     config.put(TM_ENV, "fixture");
     config.put(JM_ENV, "fixture-jm");
+    return config;
+  }
+
+  private Map<String, String> sqlRuntimeConfig() {
+    Map<String, String> config = runtimeConfig();
+    config.put(SQL_PARAMS, "acceptance.run-label:sql-smoke,acceptance.tenant:租户 beta");
     return config;
   }
 

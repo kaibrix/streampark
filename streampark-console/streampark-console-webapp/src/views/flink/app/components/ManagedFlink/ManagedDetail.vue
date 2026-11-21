@@ -342,7 +342,11 @@
               <Textarea
                 v-model:value="configurationText"
                 :rows="4"
-                placeholder="execution.checkpointing.interval=4 s"
+                :placeholder="
+                  spec.type === 'SQL'
+                    ? 'pipeline.global-job-parameters=label:example,region:beijing'
+                    : 'execution.checkpointing.interval=4 s'
+                "
               />
             </FormItem>
             <Space wrap>

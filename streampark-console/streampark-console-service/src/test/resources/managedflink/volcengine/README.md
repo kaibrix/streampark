@@ -70,7 +70,7 @@ jar cfe /tmp/managed-flink-fixture/stateful-smoke.jar \
 | Case | Draft | Expected runtime evidence |
 | --- | --- | --- |
 | SQL | Use `plain-sql.sql` | New instance prints `sql-v1`. |
-| SQL with UDF | Use `stateful-udf.sql` and attach `label-udf.jar` as a SQL dependency | TaskManager prints `udf-jar-verified:<count>:tm=tm-smoke`. |
+| SQL with UDF | Use `stateful-udf.sql` and attach `label-udf.jar` as a SQL dependency | TaskManager prints `udf-jar-verified:<count>:tm=tm-smoke:run=sql-smoke:tenant=租户 beta`. |
 | JAR | Upload `stateful-smoke.jar` and set the main class from its manifest | TaskManager prints `jar-v1 [alpha beta, 中文, --limit=7] jm=jm-smoke tm=tm-smoke offset=<count>`. |
 
 Set these runtime options before publishing the SQL with UDF and JAR cases.
@@ -80,6 +80,14 @@ execution.checkpointing.interval=4 s
 containerized.master.env.STREAM_PARK_ACCEPTANCE_JM=jm-smoke
 containerized.taskmanager.env.STREAM_PARK_ACCEPTANCE_TM=tm-smoke
 ```
+
+For SQL, also set `pipeline.global-job-parameters=acceptance.run-label:sql-smoke,acceptance.tenant:租户 beta`.
+The UDF reads both keys using `FunctionContext.getJobParameter`. The shared
+syntax for Flink 1.16, 1.17, and 1.20 is comma-separated `key:value` pairs.
+Values can contain spaces and Unicode. Use a distinct key for each value and
+omit `,`, `:`, and quotes inside values. Check the same parameter values in the
+draft, publication, running instance, and TaskManager output before and after
+restore.
 
 For the JAR, enter `alpha beta`, `中文`, and `--limit=7` in the Console
 as three separate argument lines. Set `args.base64.enabled=true` and
