@@ -15,6 +15,20 @@
   limitations under the License.
 -->
 <script setup lang="ts">
+  import {
+    Alert,
+    Button,
+    Checkbox,
+    Drawer,
+    Form,
+    Input,
+    List,
+    Popconfirm,
+    Select,
+    Space,
+    Tabs,
+    Tag,
+  } from 'ant-design-vue';
   import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import {
@@ -32,6 +46,11 @@
     type Snapshot,
   } from '/@/api/flink/managedFlink';
   import { buildUUID } from '/@/utils/uuid';
+
+  const FormItem = Form.Item;
+  const ListItem = List.Item;
+  const TabPane = Tabs.TabPane;
+  const Textarea = Input.TextArea;
 
   const props = defineProps<{ appId: string; name?: string }>();
   const { t } = useI18n();
@@ -65,6 +84,11 @@
     () => Boolean(spec.value) && JSON.stringify(draftSpec()) !== savedSpec.value,
   );
   const can = (key: string) => capabilities.value[key] === 'AVAILABLE';
+  const publishCapability = computed(() =>
+    spec.value?.type === 'SQL' && spec.value.udfArtifactId
+      ? 'PUBLISH_SQL_UDF'
+      : 'PUBLISH_' + spec.value?.type,
+  );
   const restoreChoices = computed(() =>
     snapshots.value.filter(
       (value) => value.restorable && value.release_id === job.value?.activeReleaseId,
@@ -157,7 +181,9 @@
     const artifact = await managedGet<{ main_class?: string; digest: string }>(
       base + '/artifacts/' + artifactId,
     );
-    if (spec.value) {
+    if (spec.value?.type === 'SQL') {
+      spec.value.udfArtifactId = artifactId;
+    } else if (spec.value) {
       spec.value.artifactId = artifactId;
       if (!spec.value.mainClass) spec.value.mainClass = artifact.main_class;
     }
@@ -220,78 +246,87 @@
 <template>
   <section class="p-6">
     <h2>{{ name || t('managedFlink.title') }}</h2>
-    <a-alert v-if="error" class="mb-4" :message="error" type="error" show-icon />
-    <a-alert v-if="feedback" class="mb-4" :message="feedback" show-icon />
+    <Alert v-if="error" class="mb-4" :message="error" type="error" show-icon />
+    <Alert v-if="feedback" class="mb-4" :message="feedback" show-icon />
     <template v-if="job && spec">
-      <a-space class="mb-4" wrap>
-        <a-tag>{{ environment?.name }}</a-tag>
-        <a-tag>{{ job.engineRef }}</a-tag>
-        <a-tag>{{ job.syncStatus }}</a-tag>
-        <a-tag>{{ run?.run_state || 'NOT_STARTED' }}</a-tag>
-      </a-space>
-      <a-tabs>
-        <a-tab-pane key="draft" :tab="t('managedFlink.draft')">
-          <a-form layout="vertical">
-            <a-form-item v-if="spec.type === 'SQL'" label="SQL">
-              <a-textarea v-model:value="spec.sql" :rows="10" />
-            </a-form-item>
-            <template v-else>
-              <a-form-item label="JAR">
-                <input type="file" accept=".jar" :disabled="busy" @change="upload" />
-                <div v-if="spec.artifactId">{{ spec.artifactId }}</div>
-              </a-form-item>
-              <a-form-item :label="t('managedFlink.importBuild')" v-auth="'project:view'">
-                <a-space wrap>
-                  <a-input
-                    v-model:value="buildSource.projectId"
-                    :placeholder="t('managedFlink.projectId')"
-                  />
-                  <a-input
-                    v-model:value="buildSource.module"
-                    :placeholder="t('managedFlink.module')"
-                  />
-                  <a-input v-model:value="buildSource.jar" placeholder="application.jar" />
-                  <a-button
-                    :disabled="
-                      busy || !buildSource.projectId || !buildSource.module || !buildSource.jar
-                    "
-                    @click="importBuild"
-                    >{{ t('managedFlink.importBuild') }}</a-button
-                  >
-                </a-space>
-              </a-form-item>
-              <a-form-item :label="t('managedFlink.mainClass')"
-                ><a-input v-model:value="spec.mainClass"
-              /></a-form-item>
-              <a-form-item :label="t('managedFlink.args')"
-                ><a-textarea v-model:value="argText" :rows="4"
-              /></a-form-item>
+      <Space class="mb-4" wrap>
+        <Tag>{{ environment?.name }}</Tag>
+        <Tag>{{ job.engineRef }}</Tag>
+        <Tag>{{ job.syncStatus }}</Tag>
+        <Tag>{{ run?.run_state || 'NOT_STARTED' }}</Tag>
+      </Space>
+      <Tabs>
+        <TabPane key="draft" :tab="t('managedFlink.draft')">
+          <Form layout="vertical">
+            <FormItem v-if="spec.type === 'SQL'" label="SQL">
+              <Textarea v-model:value="spec.sql" :rows="10" />
+            </FormItem>
+            <FormItem :label="spec.type === 'SQL' ? 'UDF JAR' : 'JAR'">
+              <input type="file" accept=".jar" :disabled="busy" @change="upload" />
+              <div v-if="spec.artifactId">{{ spec.artifactId }}</div>
+              <Space v-if="spec.udfArtifactId">
+                {{ spec.udfArtifactId }}
+                <Button size="small" :disabled="busy" @click="spec.udfArtifactId = undefined">
+                  {{ t('common.delText') }}
+                </Button>
+              </Space>
+            </FormItem>
+            <FormItem :label="t('managedFlink.importBuild')" v-auth="'project:view'">
+              <Space wrap>
+                <Input
+                  v-model:value="buildSource.projectId"
+                  :placeholder="t('managedFlink.projectId')"
+                />
+                <Input v-model:value="buildSource.module" :placeholder="t('managedFlink.module')" />
+                <Input v-model:value="buildSource.jar" placeholder="application.jar" />
+                <Button
+                  :disabled="
+                    busy || !buildSource.projectId || !buildSource.module || !buildSource.jar
+                  "
+                  @click="importBuild"
+                  >{{ t('managedFlink.importBuild') }}</Button
+                >
+              </Space>
+            </FormItem>
+            <template v-if="spec.type === 'JAR'">
+              <FormItem :label="t('managedFlink.mainClass')"
+                ><Input v-model:value="spec.mainClass"
+              /></FormItem>
+              <FormItem :label="t('managedFlink.args')"
+                ><Textarea v-model:value="argText" :rows="4"
+              /></FormItem>
             </template>
-            <a-space wrap>
-              <a-button v-auth="'app:update'" :disabled="busy" @click="save">{{
+            <Space wrap>
+              <Button v-auth="'app:update'" :disabled="busy" @click="save">{{
                 t('managedFlink.save')
-              }}</a-button>
-              <a-button v-auth="'app:update'" :disabled="busy" @click="validate">{{
+              }}</Button>
+              <Button v-auth="'app:update'" :disabled="busy" @click="validate">{{
                 t('managedFlink.validate')
-              }}</a-button>
-              <a-popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('publish')">
-                <a-button
+              }}</Button>
+              <Popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('publish')">
+                <Button
                   v-auth="'app:release'"
                   type="primary"
-                  :disabled="lock || dirty || running || !can('PUBLISH_' + spec.type)"
+                  :disabled="
+                    lock ||
+                    dirty ||
+                    running ||
+                    !can('PUBLISH_' + spec.type) ||
+                    !can(publishCapability)
+                  "
                 >
                   {{ t('managedFlink.publish') }}
-                </a-button>
-              </a-popconfirm>
-              <span v-if="!can('PUBLISH_' + spec.type)">{{
-                capabilities['PUBLISH_' + spec.type] || 'UNVERIFIED'
+                </Button>
+              </Popconfirm>
+              <span v-if="!can(publishCapability)">{{
+                capabilities[publishCapability] || 'UNVERIFIED'
               }}</span>
-            </a-space>
-          </a-form>
-        </a-tab-pane>
-        <a-tab-pane key="run" :tab="t('managedFlink.runs')">
-          <a-space class="mb-4" wrap>
-            <a-select
+            </Space>
+          </Form>
+        </TabPane>
+        <TabPane key="run" :tab="t('managedFlink.runs')">
+          <Space class="mb-4" wrap>
+            <Select
               v-model:value="restore"
               :options="[
                 { value: 'FROM_NEW', label: t('managedFlink.restartNew') },
@@ -307,16 +342,16 @@
                 },
               ]"
             />
-            <a-checkbox v-if="restore === 'FROM_NEW' && run" v-model:checked="fresh">{{
+            <Checkbox v-if="restore === 'FROM_NEW' && run" v-model:checked="fresh">{{
               t('managedFlink.confirmNew')
-            }}</a-checkbox>
-            <a-select
+            }}</Checkbox>
+            <Select
               v-if="restore === 'FROM_SNAPSHOT'"
               v-model:value="snapshotId"
               style="min-width: 240px"
               :options="restoreChoices.map(({ id }) => ({ value: id }))"
             />
-            <a-button
+            <Button
               v-auth="'app:start'"
               :disabled="lock || running || !job.activeReleaseId || !can('START')"
               @click="
@@ -327,44 +362,44 @@
               "
             >
               {{ t('managedFlink.start') }}
-            </a-button>
-            <a-popconfirm
+            </Button>
+            <Popconfirm
               :title="t('managedFlink.stop')"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'IMMEDIATE' })"
             >
-              <a-button v-auth="'app:cancel'" :disabled="lock || !running || !can('STOP')">{{
+              <Button v-auth="'app:cancel'" :disabled="lock || !running || !can('STOP')">{{
                 t('managedFlink.stop')
-              }}</a-button>
-            </a-popconfirm>
-            <a-popconfirm
+              }}</Button>
+            </Popconfirm>
+            <Popconfirm
               :title="t('managedFlink.snapshotStopConfirm')"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'AFTER_SNAPSHOT' })"
             >
-              <a-button
+              <Button
                 v-auth="'app:cancel'"
                 :disabled="lock || !running || !can('SNAPSHOT_THEN_STOP')"
-                >{{ t('managedFlink.snapshotStop') }}</a-button
+                >{{ t('managedFlink.snapshotStop') }}</Button
               >
-            </a-popconfirm>
-            <a-button
+            </Popconfirm>
+            <Button
               v-auth="'savepoint:trigger'"
               :disabled="lock || !running || !can('SNAPSHOT')"
               @click="command('snapshots', { expectedRunId: run?.id })"
-              >{{ t('managedFlink.snapshot') }}</a-button
+              >{{ t('managedFlink.snapshot') }}</Button
             >
-          </a-space>
-          <a-list :data-source="runs">
+          </Space>
+          <List :data-source="runs">
             <template #renderItem="{ item }"
-              ><a-list-item
+              ><ListItem
                 >{{ item.provider_instance_id }} · {{ item.run_state }} ·
-                {{ item.origin }}</a-list-item
+                {{ item.origin }}</ListItem
               ></template
             >
-          </a-list>
-        </a-tab-pane>
-        <a-tab-pane key="release" :tab="t('managedFlink.versions')">
-          <a-space class="mb-4">
-            <a-select
+          </List>
+        </TabPane>
+        <TabPane key="release" :tab="t('managedFlink.versions')">
+          <Space class="mb-4">
+            <Select
               v-model:value="sourceReleaseId"
               style="min-width: 180px"
               :options="
@@ -373,70 +408,69 @@
                   .map((item) => ({ value: item.id, label: 'R' + item.release_no }))
               "
             />
-            <a-popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('rollback')">
-              <a-button
+            <Popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('rollback')">
+              <Button
                 v-auth="'app:release'"
                 :disabled="lock || running || !sourceReleaseId || !can('PUBLISH_' + spec.type)"
               >
                 {{ t('managedFlink.rollback') }}
-              </a-button>
-            </a-popconfirm>
-          </a-space>
-          <a-list :data-source="releases">
+              </Button>
+            </Popconfirm>
+          </Space>
+          <List :data-source="releases">
             <template #renderItem="{ item }"
-              ><a-list-item
-                >R{{ item.release_no }} · {{ item.status }} ·
-                {{ item.provider_version }}</a-list-item
+              ><ListItem
+                >R{{ item.release_no }} · {{ item.status }} · {{ item.provider_version }}</ListItem
               ></template
             >
-          </a-list>
-        </a-tab-pane>
-        <a-tab-pane key="snapshot" :tab="t('managedFlink.snapshots')">
-          <a-list :data-source="snapshots">
+          </List>
+        </TabPane>
+        <TabPane key="snapshot" :tab="t('managedFlink.snapshots')">
+          <List :data-source="snapshots">
             <template #renderItem="{ item }"
-              ><a-list-item>{{ item.id }} · {{ item.state }}</a-list-item></template
+              ><ListItem>{{ item.id }} · {{ item.state }}</ListItem></template
             >
-          </a-list>
-        </a-tab-pane>
-        <a-tab-pane key="operations" :tab="t('managedFlink.operations')">
-          <a-list :data-source="operations">
+          </List>
+        </TabPane>
+        <TabPane key="operations" :tab="t('managedFlink.operations')">
+          <List :data-source="operations">
             <template #renderItem="{ item }">
-              <a-list-item>
-                <a-button type="link" @click="details(item.id)"
-                  >{{ item.command_type }} · {{ item.status }}</a-button
+              <ListItem>
+                <Button type="link" @click="details(item.id)"
+                  >{{ item.command_type }} · {{ item.status }}</Button
                 >
-              </a-list-item>
+              </ListItem>
             </template>
-          </a-list>
-        </a-tab-pane>
-        <a-tab-pane key="diagnostics" :tab="t('managedFlink.diagnostics')">
+          </List>
+        </TabPane>
+        <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <p>{{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}</p>
           <p>{{ t('managedFlink.metrics') }} · {{ capabilities.METRICS || 'UNVERIFIED' }}</p>
-        </a-tab-pane>
-      </a-tabs>
-      <a-drawer
+        </TabPane>
+      </Tabs>
+      <Drawer
         :visible="Boolean(selected)"
         :title="selected?.id"
         width="480"
         @close="selected = undefined"
       >
         <p>{{ selected?.command_type }} · {{ selected?.status }}</p>
-        <a-list :data-source="selected?.steps || []">
+        <List :data-source="selected?.steps || []">
           <template #renderItem="{ item }">
-            <a-list-item
+            <ListItem
               >{{ item.action }} · {{ item.state }} · {{ item.error_code }} ·
-              {{ item.request_id }}</a-list-item
+              {{ item.request_id }}</ListItem
             >
           </template>
-        </a-list>
-        <a-button
+        </List>
+        <Button
           v-if="selected?.status === 'VERIFY_REQUIRED'"
           v-auth="'app:release'"
           :loading="busy"
           @click="selected && reconcile(selected.id)"
-          >{{ t('managedFlink.reconcile') }}</a-button
+          >{{ t('managedFlink.reconcile') }}</Button
         >
-      </a-drawer>
+      </Drawer>
     </template>
   </section>
 </template>

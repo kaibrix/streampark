@@ -15,10 +15,28 @@
   limitations under the License.
 -->
 <script setup lang="ts">
+  import {
+    Alert,
+    Button,
+    Card,
+    Collapse,
+    Form,
+    Input,
+    Modal,
+    Radio,
+    Select,
+    Space,
+  } from 'ant-design-vue';
   import { onMounted, reactive, ref } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { useRouter } from 'vue-router';
   import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
+
+  const CollapsePanel = Collapse.Panel;
+  const FormItem = Form.Item;
+  const InputPassword = Input.Password;
+  const RadioGroup = Radio.Group;
+  const Textarea = Input.TextArea;
 
   const { t } = useI18n();
   const router = useRouter();
@@ -122,15 +140,15 @@
 
 <template>
   <div v-if="available" class="mb-4">
-    <a-button v-if="!visible" @click="visible = true">{{ t('managedFlink.create') }}</a-button>
-    <a-card v-else :title="t('managedFlink.create')">
-      <a-alert v-if="message" class="mb-4" :message="message" show-icon />
-      <a-form layout="vertical" @finish="create">
-        <a-form-item :label="t('managedFlink.name')" required>
-          <a-input v-model:value="job.name" />
-        </a-form-item>
-        <a-form-item :label="t('managedFlink.environment')" required>
-          <a-select
+    <Button v-if="!visible" @click="visible = true">{{ t('managedFlink.create') }}</Button>
+    <Card v-else :title="t('managedFlink.create')">
+      <Alert v-if="message" class="mb-4" :message="message" show-icon />
+      <Form :model="job" layout="vertical" @finish="create">
+        <FormItem :label="t('managedFlink.name')" required>
+          <Input v-model:value="job.name" />
+        </FormItem>
+        <FormItem :label="t('managedFlink.environment')" required>
+          <Select
             v-model:value="job.environmentId"
             :options="
               environments
@@ -138,91 +156,87 @@
                 .map(({ id, name }) => ({ value: id, label: name }))
             "
           />
-        </a-form-item>
-        <a-form-item :label="t('managedFlink.type')">
-          <a-radio-group v-model:value="job.type" :options="['SQL', 'JAR']" />
-        </a-form-item>
-        <a-form-item v-if="job.type === 'SQL'" label="SQL">
-          <a-textarea v-model:value="job.sql" :rows="8" />
-        </a-form-item>
-        <a-space>
-          <a-button
+        </FormItem>
+        <FormItem :label="t('managedFlink.type')">
+          <RadioGroup v-model:value="job.type" :options="['SQL', 'JAR']" />
+        </FormItem>
+        <FormItem v-if="job.type === 'SQL'" label="SQL">
+          <Textarea v-model:value="job.sql" :rows="8" />
+        </FormItem>
+        <Space>
+          <Button
             type="primary"
             html-type="submit"
             :loading="busy"
             :disabled="!job.name || !job.environmentId"
           >
             {{ t('managedFlink.save') }}
-          </a-button>
-          <a-button v-auth="'team:update'" @click="showSettings">{{
+          </Button>
+          <Button v-auth="'team:update'" @click="showSettings">{{
             t('managedFlink.settings')
-          }}</a-button>
-          <a-button @click="visible = false">{{ t('common.cancelText') }}</a-button>
-        </a-space>
-      </a-form>
-    </a-card>
-    <a-modal
+          }}</Button>
+          <Button @click="visible = false">{{ t('common.cancelText') }}</Button>
+        </Space>
+      </Form>
+    </Card>
+    <Modal
       v-model:visible="settings"
       :title="t('managedFlink.settings')"
       :footer="null"
       width="680px"
     >
-      <a-alert v-if="message" class="mb-4" :message="message" />
-      <a-collapse>
-        <a-collapse-panel key="connection" :header="t('managedFlink.connection')">
-          <a-form layout="vertical" @finish="addConnection">
-            <a-form-item :label="t('managedFlink.name')"
-              ><a-input v-model:value="connection.name"
-            /></a-form-item>
-            <a-form-item :label="t('managedFlink.provider')">
-              <a-select
+      <Alert v-if="message" class="mb-4" :message="message" />
+      <Collapse>
+        <CollapsePanel key="connection" :header="t('managedFlink.connection')">
+          <Form :model="connection" layout="vertical" @finish="addConnection">
+            <FormItem :label="t('managedFlink.name')"
+              ><Input v-model:value="connection.name"
+            /></FormItem>
+            <FormItem :label="t('managedFlink.provider')">
+              <Select
                 v-model:value="connection.provider"
                 :options="['volcengine', 'mock', 'alibaba-fixture'].map((value) => ({ value }))"
               />
-            </a-form-item>
-            <a-form-item :label="t('managedFlink.account')"
-              ><a-input v-model:value="connection.accountRef"
-            /></a-form-item>
+            </FormItem>
+            <FormItem :label="t('managedFlink.account')"
+              ><Input v-model:value="connection.accountRef"
+            /></FormItem>
             <template v-if="connection.provider === 'volcengine'">
-              <a-form-item label="Access Key"
-                ><a-input-password v-model:value="connection.accessKey" autocomplete="off"
-              /></a-form-item>
-              <a-form-item label="Secret Key"
-                ><a-input-password v-model:value="connection.secretKey" autocomplete="off"
-              /></a-form-item>
+              <FormItem label="Access Key"
+                ><InputPassword v-model:value="connection.accessKey" autocomplete="off"
+              /></FormItem>
+              <FormItem label="Secret Key"
+                ><InputPassword v-model:value="connection.secretKey" autocomplete="off"
+              /></FormItem>
             </template>
-            <a-button html-type="submit" :loading="busy">{{
-              t('managedFlink.connection')
-            }}</a-button>
-          </a-form>
-        </a-collapse-panel>
-        <a-collapse-panel key="environment" :header="t('managedFlink.environment')">
-          <a-form layout="vertical" @finish="addEnvironment">
-            <a-form-item :label="t('managedFlink.name')"
-              ><a-input v-model:value="environment.name"
-            /></a-form-item>
-            <a-form-item :label="t('managedFlink.connection')">
-              <a-select
+            <Button html-type="submit" :loading="busy">{{ t('managedFlink.connection') }}</Button>
+          </Form>
+        </CollapsePanel>
+        <CollapsePanel key="environment" :header="t('managedFlink.environment')">
+          <Form :model="environment" layout="vertical" @finish="addEnvironment">
+            <FormItem :label="t('managedFlink.name')"
+              ><Input v-model:value="environment.name"
+            /></FormItem>
+            <FormItem :label="t('managedFlink.connection')">
+              <Select
                 v-model:value="environment.connectionId"
                 :options="connections.map(({ id, name }) => ({ value: id, label: name }))"
               />
-            </a-form-item>
-            <a-form-item :label="t('managedFlink.region')"
-              ><a-input v-model:value="environment.region"
-            /></a-form-item>
-            <a-form-item
+            </FormItem>
+            <FormItem :label="t('managedFlink.region')"
+              ><Input v-model:value="environment.region"
+            /></FormItem>
+            <FormItem
               v-for="(_, key) in environment.target"
               :key="key"
               :label="t('managedFlink.' + key)"
             >
-              <a-input v-model:value="environment.target[key]" />
-            </a-form-item>
-            <a-button html-type="submit" :loading="busy">{{
-              t('managedFlink.environment')
-            }}</a-button>
-          </a-form>
-        </a-collapse-panel>
-      </a-collapse>
-    </a-modal>
+              <Input v-model:value="environment.target[key]" />
+            </FormItem>
+            <Button html-type="submit" :loading="busy">{{ t('managedFlink.environment') }}</Button>
+          </Form>
+        </CollapsePanel>
+      </Collapse>
+    </Modal>
   </div>
 </template>

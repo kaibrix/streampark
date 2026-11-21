@@ -22,6 +22,7 @@ export interface Spec {
   type: 'SQL' | 'JAR';
   sql?: string;
   artifactId?: string;
+  udfArtifactId?: string;
   mainClass?: string;
   args: string[];
   configuration: Record<string, string>;
