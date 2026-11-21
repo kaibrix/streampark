@@ -27,6 +27,7 @@ import org.apache.streampark.console.base.domain.RestRequest;
 import org.apache.streampark.console.base.exception.InternalException;
 import org.apache.streampark.console.base.mybatis.pager.MybatisPager;
 import org.apache.streampark.console.base.util.CommonUtils;
+import org.apache.streampark.console.core.managedflink.NativeFlinkGuard;
 import org.apache.streampark.console.core.entity.Application;
 import org.apache.streampark.console.core.entity.ApplicationConfig;
 import org.apache.streampark.console.core.entity.ApplicationLog;
@@ -242,6 +243,7 @@ public class SavepointServiceImpl extends ServiceImpl<SavepointMapper, Savepoint
   @Override
   public String getSavePointPath(Application appParam) throws Exception {
     Application application = applicationService.getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
 
     // 1) properties have the highest priority, read the properties are set: -Dstate.savepoints.dir
     Map<String, String> properties =
@@ -332,6 +334,7 @@ public class SavepointServiceImpl extends ServiceImpl<SavepointMapper, Savepoint
   public void trigger(Long appId, @Nullable String savepointPath) throws Exception {
     log.info("Start to trigger savepoint for app {}", appId);
     Application application = applicationService.getById(appId);
+    NativeFlinkGuard.requireNative(application);
 
     ApplicationLog applicationLog = new ApplicationLog();
     applicationLog.setOptionName(Operation.SAVEPOINT.getValue());
@@ -485,6 +488,7 @@ public class SavepointServiceImpl extends ServiceImpl<SavepointMapper, Savepoint
   @Override
   @Transactional(rollbackFor = Exception.class)
   public Boolean delete(Long id, Application application) throws InternalException {
+    NativeFlinkGuard.requireNative(application);
     Savepoint savepoint = getById(id);
     try {
       if (CommonUtils.notEmpty(savepoint.getPath())) {
@@ -509,6 +513,7 @@ public class SavepointServiceImpl extends ServiceImpl<SavepointMapper, Savepoint
 
   @Override
   public void removeApp(Application application) {
+    NativeFlinkGuard.requireNative(application);
     Long appId = application.getId();
 
     LambdaQueryWrapper<Savepoint> queryWrapper =

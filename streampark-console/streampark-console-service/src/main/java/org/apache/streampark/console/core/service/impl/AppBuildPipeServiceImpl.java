@@ -27,6 +27,7 @@ import org.apache.streampark.common.util.ThreadUtils;
 import org.apache.streampark.common.util.Utils;
 import org.apache.streampark.console.base.exception.ApiAlertException;
 import org.apache.streampark.console.base.util.WebUtils;
+import org.apache.streampark.console.core.managedflink.NativeFlinkGuard;
 import org.apache.streampark.console.core.bean.DockerConfig;
 import org.apache.streampark.console.core.entity.AppBuildPipeline;
 import org.apache.streampark.console.core.entity.Application;
@@ -165,6 +166,7 @@ public class AppBuildPipeServiceImpl
 
   @Override
   public boolean buildApplication(@Nonnull Application app, ApplicationLog applicationLog) {
+    NativeFlinkGuard.requireNative(app);
     // 1) flink sql setDependency
     FlinkSql newFlinkSql = flinkSqlService.getCandidate(app.getId(), CandidateType.NEW);
     FlinkSql effectiveFlinkSql = flinkSqlService.getEffective(app.getId(), false);

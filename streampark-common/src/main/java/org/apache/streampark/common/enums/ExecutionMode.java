@@ -37,7 +37,9 @@ public enum ExecutionMode implements Serializable {
   /** kubernetes session */
   KUBERNETES_NATIVE_SESSION(5, "kubernetes-session"),
   /** kubernetes application */
-  KUBERNETES_NATIVE_APPLICATION(6, "kubernetes-application");
+  KUBERNETES_NATIVE_APPLICATION(6, "kubernetes-application"),
+  /** Cloud-managed Flink control plane. */
+  MANAGED_FLINK(7, "managed-flink");
 
   private final Integer mode;
 

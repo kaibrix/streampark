@@ -175,7 +175,8 @@ public class FlinkAppHttpWatcher {
         applicationService.list(
             new LambdaQueryWrapper<Application>()
                 .eq(Application::getTracking, 1)
-                .notIn(Application::getExecutionMode, ExecutionMode.getKubernetesMode()));
+                .notIn(Application::getExecutionMode, ExecutionMode.getKubernetesMode())
+                .ne(Application::getExecutionMode, ExecutionMode.MANAGED_FLINK.getMode()));
     applications.forEach((app) -> WATCHING_APPS.put(app.getId(), app));
   }
 
@@ -652,7 +653,7 @@ public class FlinkAppHttpWatcher {
   }
 
   public static void doWatching(Application application) {
-    if (application.isKubernetesModeJob()) {
+    if (application.isKubernetesModeJob() || application.isManagedFlinkJob()) {
       return;
     }
     log.info("[StreamPark][FlinkAppHttpWatcher] add app to tracking,appId:{}", application.getId());

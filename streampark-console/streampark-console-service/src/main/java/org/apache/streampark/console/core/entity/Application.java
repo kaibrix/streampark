@@ -496,6 +496,11 @@ public class Application implements Serializable {
     return this.getAppType() == ApplicationType.STREAMPARK_FLINK.getType();
   }
 
+  @JsonIgnore
+  public boolean isManagedFlinkJob() {
+    return ExecutionMode.MANAGED_FLINK.getMode().equals(getExecutionMode());
+  }
+
   public boolean isKubernetesModeJob() {
     return ExecutionMode.isKubernetesMode(this.getExecutionModeEnum());
   }

@@ -24,6 +24,7 @@ export enum ExecModeEnum {
   KUBERNETES_SESSION = 5,
   /** kubernetes application */
   KUBERNETES_APPLICATION = 6,
+  MANAGED_FLINK = 7,
 }
 
 export enum ReleaseStateEnum {

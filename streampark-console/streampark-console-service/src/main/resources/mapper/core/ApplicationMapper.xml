@@ -89,6 +89,8 @@
         on t.project_id = p.id
         <where>
             t.team_id = #{application.teamId}
+            and (t.execution_mode is null or t.execution_mode &lt;&gt; 7
+              or not exists (select 1 from t_flink_managed_job m where m.app_id = t.id and m.archived = true))
             <if test="application.jobType != null and application.jobType != ''">
                 and t.job_type = #{application.jobType}
             </if>
@@ -232,6 +234,7 @@
             end_time=null,
             state=14,
             tracking=1
+            and (execution_mode is null or execution_mode &lt;&gt; 7)
         </set>
         where id=#{application.id}
     </update>

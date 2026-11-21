@@ -43,6 +43,7 @@ import org.apache.streampark.console.base.mybatis.pager.MybatisPager;
 import org.apache.streampark.console.base.util.CommonUtils;
 import org.apache.streampark.console.base.util.ObjectUtils;
 import org.apache.streampark.console.base.util.WebUtils;
+import org.apache.streampark.console.core.managedflink.NativeFlinkGuard;
 import org.apache.streampark.console.core.bean.AppControl;
 import org.apache.streampark.console.core.bean.MavenDependency;
 import org.apache.streampark.console.core.entity.AppBuildPipeline;
@@ -366,6 +367,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   public void revoke(Application appParma) throws ApplicationException {
     Application application = getById(appParma.getId());
+    NativeFlinkGuard.requireNative(application);
     ApiAlertException.throwIfNull(
         application,
         String.format("The application id=%s not found, revoke failed.", appParma.getId()));
@@ -395,6 +397,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   public Boolean delete(Application paramApp) {
 
     Application application = getById(paramApp.getId());
+    NativeFlinkGuard.requireNative(application);
 
     // 1) remove flink sql
     flinkSqlService.removeApp(application.getId());
@@ -433,6 +436,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   public boolean checkEnv(Application appParam) throws ApplicationException {
     Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
     try {
       FlinkEnv flinkEnv;
       if (application.getVersionId() != null) {
@@ -536,6 +540,9 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
     // add building pipeline status info and app control info
     records.forEach(
         record -> {
+          if (record.isManagedFlinkJob()) {
+            return;
+          }
           // 1) running Duration
           if (record.getTracking() == 1) {
             FlinkAppState state = record.getFlinkAppStateEnum();
@@ -640,6 +647,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public String k8sStartLog(Long id, Integer offset, Integer limit) throws Exception {
+    NativeFlinkGuard.requireNative(getById(id));
     Application application = getById(id);
     ApiAlertException.throwIfNull(
         application, String.format("The application id=%s can't be found.", id));
@@ -687,6 +695,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   public AppExistsState checkStart(Application appParam) {
     Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
     if (application == null) {
       return AppExistsState.INVALID;
     }
@@ -768,6 +777,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   @Transactional(rollbackFor = {Exception.class})
   public boolean create(Application appParam) {
+    NativeFlinkGuard.requireNative(appParam);
     ApiAlertException.throwIfNull(
         appParam.getTeamId(), "The teamId can't be null. Create application failed.");
 
@@ -837,6 +847,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
         "[StreamPark] Application names can't be repeated, copy application failed.");
 
     Application persist = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(persist);
     Application newApp = new Application();
     String jobName = appParam.getJobName();
 
@@ -920,6 +931,8 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Transactional(rollbackFor = {Exception.class})
   public boolean update(Application appParam) {
     Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
+    NativeFlinkGuard.requireNative(appParam);
 
     boolean success = validateQueueIfNeeded(application, appParam);
     ApiAlertException.throwIfFalse(
@@ -1156,6 +1169,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public boolean checkBuildAndUpdate(Application application) {
+    NativeFlinkGuard.requireNative(application);
     boolean build = application.getBuild();
     if (!build) {
       LambdaUpdateWrapper<Application> updateWrapper = Wrappers.lambdaUpdate();
@@ -1188,6 +1202,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public void abort(Application app) {
+    NativeFlinkGuard.requireNative(getById(app.getId()));
     CompletableFuture<SubmitResponse> startFuture = startFutureMap.remove(app.getId());
     CompletableFuture<CancelResponse> cancelFuture = cancelFutureMap.remove(app.getId());
     Application application = this.baseMapper.getApp(app);
@@ -1208,6 +1223,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public void clean(Application appParam) {
+    NativeFlinkGuard.requireNative(getById(appParam.getId()));
     appParam.setRelease(ReleaseState.DONE.get());
     this.updateRelease(appParam);
   }
@@ -1222,6 +1238,9 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   public Application getApp(Application appParam) {
     Application application = this.baseMapper.getApp(appParam);
+    if (application != null && application.isManagedFlinkJob()) {
+      return application;
+    }
     ApplicationConfig config = configService.getEffective(appParam.getId());
     config = config == null ? configService.getLatest(appParam.getId()) : config;
     if (config != null) {
@@ -1287,8 +1306,9 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public boolean mapping(Application appParam) {
-    boolean mapping = this.baseMapper.mapping(appParam);
     Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
+    boolean mapping = this.baseMapper.mapping(appParam);
     if (application.isKubernetesModeJob()) {
       flinkK8sWatcher.doWatching(k8sWatcherWrapper.toTrackId(application));
     } else {
@@ -1299,9 +1319,9 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public void cancel(Application appParam) throws Exception {
-    FlinkAppHttpWatcher.setOptionState(appParam.getId(), OptionState.CANCELLING);
-
     Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
+    FlinkAppHttpWatcher.setOptionState(appParam.getId(), OptionState.CANCELLING);
     application.setState(FlinkAppState.CANCELLING.getValue());
 
     ApplicationLog applicationLog = new ApplicationLog();
@@ -1455,6 +1475,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public String checkSavepointPath(Application appParam) throws Exception {
+    NativeFlinkGuard.requireNative(getById(appParam.getId()));
     String savepointPath = appParam.getSavepointPath();
     if (StringUtils.isBlank(savepointPath)) {
       savepointPath = savepointService.getSavePointPath(appParam);
@@ -1511,6 +1532,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Transactional(rollbackFor = {Exception.class})
   public void start(Application appParam, boolean auto) throws Exception {
     final Application application = getById(appParam.getId());
+    NativeFlinkGuard.requireNative(application);
     AssertUtils.notNull(application);
     if (!application.isCanBeStart()) {
       throw new ApiAlertException("[StreamPark] The application cannot be started repeatedly.");
@@ -1987,6 +2009,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   @Override
   public RestResponse buildApplication(Long appId, boolean forceBuild) throws Exception {
     Application app = this.getById(appId);
+    NativeFlinkGuard.requireNative(app);
 
     ApiAlertException.throwIfNull(
         app.getVersionId(), "Please bind a Flink version to the current flink job.");
