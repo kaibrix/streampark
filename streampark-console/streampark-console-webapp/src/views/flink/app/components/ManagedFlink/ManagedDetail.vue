@@ -267,6 +267,7 @@
   function readMetrics() {
     const id = metricRun.value || job.value?.currentRunId;
     if (!id) return;
+    metricRun.value = id;
     void action(async () => {
       metrics.value = await managedGet(base + `/runs/${id}/metrics`);
     });
@@ -498,6 +499,7 @@
             <Space wrap>
               <Select
                 :value="metricRun || job.currentRunId"
+                :disabled="busy"
                 style="min-width: 220px"
                 :options="
                   runs.map((entry) => ({

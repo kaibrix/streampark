@@ -52,6 +52,7 @@ the Flink runtime read access.
 
 The metrics option uses Volcengine Cloud Monitor reads for CPU and memory
 usage. Enable it after verifying access to the test deployment dimensions.
+Probe the managed environment again after changing this option.
 
 Build the fixtures with a Java compiler that supports `--release 8`. Use the
 Flink table-common JAR for the UDF. Use the Flink core, runtime, and streaming
