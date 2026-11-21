@@ -15,6 +15,7 @@
   limitations under the License.
 -->
 <script setup lang="ts" name="ApplicationDetail">
+  import ManagedDetail from './components/ManagedFlink/ManagedDetail.vue';
   import { ExecModeEnum } from '/@/enums/flinkEnum';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { fetchAppExternalLink } from '/@/api/flink/setting/externalLink';
@@ -25,7 +26,7 @@
   import { Icon, SvgIcon } from '/@/components/Icon';
   import { useRoute, useRouter } from 'vue-router';
   import { fetchGet, fetchOptionLog, fetchYarn } from '/@/api/flink/app/app';
-  import { onUnmounted, reactive, h, ref, onMounted } from 'vue';
+  import { onUnmounted, reactive, h, ref, watch } from 'vue';
   import { useIntervalFn } from '@vueuse/core';
   import { AppListRecord } from '/@/api/flink/app/app.type';
   import { Tooltip, Divider, Space } from 'ant-design-vue';
@@ -130,10 +131,19 @@
   );
 
   async function handleGetAppInfo() {
-    if (!route.query.appId) router.back();
-    const res = await fetchGet({
-      id: route.query.appId as string,
-    });
+    if (!route.query.appId) {
+      router.back();
+      return;
+    }
+    const id = String(route.query.appId);
+    if (String(app.id) === id && app.executionMode === ExecModeEnum.MANAGED_FLINK) return;
+    const res = await fetchGet({ id });
+    if (String(route.query.appId) !== id) return;
+    if (res.executionMode === ExecModeEnum.MANAGED_FLINK) {
+      Object.assign(app, res);
+      return;
+    }
+    if (!externalLinks.value.length && !Object.keys(app).length) void getExternalLinks();
     // Get data for the first time
     if (Object.keys(app).length == 0) {
       if (
@@ -177,9 +187,16 @@
     externalLinks.value = links.data;
   }
 
-  onMounted(() => {
-    getExternalLinks();
-  });
+  watch(
+    () => route.query.appId,
+    () => {
+      for (const key of Object.keys(app) as (keyof AppListRecord)[]) delete app[key];
+      externalLinks.value = [];
+      for (const key of Object.keys(detailTabs) as (keyof typeof detailTabs)[])
+        detailTabs[key] = false;
+      void handleGetAppInfo();
+    },
+  );
 
   onUnmounted(() => {
     pause();
@@ -187,7 +204,13 @@
 </script>
 <template>
   <PageWrapper content-full-height content-background>
-    <div class="detail-pad">
+    <ManagedDetail
+      v-if="app.executionMode === ExecModeEnum.MANAGED_FLINK"
+      :key="String(route.query.appId)"
+      :app-id="String(route.query.appId)"
+      :name="app.jobName"
+    />
+    <div v-else class="detail-pad">
       <div class="mb-15px">
         <span class="app-bar">{{ t('flink.app.detail.detailTitle') }}</span>
         <Space class="-mt-8px">

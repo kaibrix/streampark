@@ -19,7 +19,7 @@
   import { nextTick, ref, onUnmounted, onMounted } from 'vue';
   import { useAppTableAction } from './hooks/useAppTableAction';
   import { useI18n } from '/@/hooks/web/useI18n';
-  import { JobTypeEnum, OptionStateEnum, ReleaseStateEnum } from '/@/enums/flinkEnum';
+  import { ExecModeEnum, JobTypeEnum, OptionStateEnum, ReleaseStateEnum } from '/@/enums/flinkEnum';
   import { useDebounceFn, useTimeoutFn } from '@vueuse/core';
   import {
     Form,
@@ -66,6 +66,7 @@
     tags: undefined,
     owner: undefined,
     jobType: undefined,
+    executionMode: undefined,
   });
   const optionApps = {
     starting: new Map(),
@@ -332,6 +333,19 @@
                     />
                   </Form.Item>
                 </Col>
+                <Col :span="4">
+                  <Form.Item>
+                    <Select
+                      v-model:value="searchRef.executionMode"
+                      :placeholder="t('flink.app.executionMode')"
+                      allow-clear
+                      :options="[
+                        { label: t('managedFlink.title'), value: ExecModeEnum.MANAGED_FLINK },
+                      ]"
+                      @change="() => handleResetReload()"
+                    />
+                  </Form.Item>
+                </Col>
               </Row>
             </Form>
             <div v-auth="'app:create'">
@@ -346,6 +360,9 @@
           <template v-if="column.dataIndex === 'jobName'">
             <span class="app_type app_jar" v-if="record['jobType'] === JobTypeEnum.JAR"> JAR </span>
             <span class="app_type app_sql" v-if="record['jobType'] === JobTypeEnum.SQL"> SQL </span>
+            <Tag v-if="record.executionMode === ExecModeEnum.MANAGED_FLINK">{{
+              t('managedFlink.title')
+            }}</Tag>
             <span class="link cursor-pointer" @click="handleJobView(record)">
               <Popover :title="t('common.detailText')">
                 <template #content>
@@ -410,7 +427,13 @@
             />
           </template>
           <template v-if="column.dataIndex === 'operation'">
-            <TableAction v-bind="getTableActions(record, currentTablePage)" />
+            <Button
+              v-if="record.executionMode === ExecModeEnum.MANAGED_FLINK"
+              type="link"
+              @click="handleJobView(record)"
+              >{{ t('common.detailText') }}</Button
+            >
+            <TableAction v-else v-bind="getTableActions(record, currentTablePage)" />
           </template>
         </template>
         <template #insertTable="{ tableContainer }">

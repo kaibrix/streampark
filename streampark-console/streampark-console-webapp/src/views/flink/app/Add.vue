@@ -16,6 +16,7 @@
 -->
 <script setup lang="ts" name="AppCreate">
   import { useGo } from '/@/hooks/web/usePage';
+  import ManagedCreate from './components/ManagedFlink/ManagedCreate.vue';
   import ProgramArgs from './components/ProgramArgs.vue';
   import { Switch, Alert } from 'ant-design-vue';
   import { onMounted, reactive, ref, unref } from 'vue';
@@ -305,6 +306,7 @@
 
 <template>
   <PageWrapper contentFullHeight contentBackground contentClass="p-26px app_controller">
+    <ManagedCreate />
     <BasicForm @register="registerAppForm" @submit="handleAppCreate" :schemas="getCreateFormSchema">
       <template #flinkSql="{ model, field }">
         <FlinkSqlEditor
