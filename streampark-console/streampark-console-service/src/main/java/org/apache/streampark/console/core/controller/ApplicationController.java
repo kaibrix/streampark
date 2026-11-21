@@ -28,6 +28,7 @@ import org.apache.streampark.console.core.entity.Application;
 import org.apache.streampark.console.core.entity.ApplicationBackUp;
 import org.apache.streampark.console.core.entity.ApplicationLog;
 import org.apache.streampark.console.core.enums.AppExistsState;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkCatalog;
 import org.apache.streampark.console.core.service.ApplicationBackUpService;
 import org.apache.streampark.console.core.service.ApplicationLogService;
 import org.apache.streampark.console.core.service.ApplicationService;
@@ -58,6 +59,8 @@ public class ApplicationController {
 
   @Autowired private ApplicationService applicationService;
 
+  @Autowired private ManagedFlinkCatalog managedFlinkCatalog;
+
   @Autowired private ApplicationBackUpService backUpService;
 
   @Autowired private ApplicationLogService applicationLogService;
@@ -67,6 +70,9 @@ public class ApplicationController {
   @RequiresPermissions("app:detail")
   public RestResponse get(Application app) {
     Application application = applicationService.getApp(app);
+    if (application != null && application.isManagedFlinkJob()) {
+      managedFlinkCatalog.authorize(application.getTeamId(), "app:detail");
+    }
     return RestResponse.success(application);
   }
 

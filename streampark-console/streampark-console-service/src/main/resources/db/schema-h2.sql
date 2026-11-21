@@ -525,6 +525,7 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_release (
   spec_hash varchar(64) NOT NULL,
   target text NOT NULL,
   provider_version varchar(191),
+  artifact_ref varchar(768),
   status varchar(24) NOT NULL,
   created_at bigint NOT NULL,
   UNIQUE (app_id, release_no)
