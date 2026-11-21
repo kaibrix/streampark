@@ -62,7 +62,15 @@ class ManagedFlinkRuntimeConfigurationTest {
     Fixture fixture = new Fixture(new MockManagedFlinkProvider());
     Spec spec = sql();
     spec.setConfiguration(runtimeConfig());
-    verifyFrozenRestore(fixture, spec);
+    verifyFrozenRestore(fixture, spec, RestoreMode.FROM_SNAPSHOT);
+  }
+
+  @Test
+  void sqlLatestRestorePinsTheNewestCompatibleSnapshot() {
+    Fixture fixture = new Fixture(new MockManagedFlinkProvider());
+    Spec spec = sql();
+    spec.setConfiguration(runtimeConfig());
+    verifyFrozenRestore(fixture, spec, RestoreMode.FROM_LATEST);
   }
 
   @Test
@@ -80,7 +88,7 @@ class ManagedFlinkRuntimeConfigurationTest {
     spec.setArgs(JAR_ARGS);
     spec.setConfiguration(runtimeConfig());
 
-    FrozenCommand restored = verifyFrozenRestore(fixture, spec);
+    FrozenCommand restored = verifyFrozenRestore(fixture, spec, RestoreMode.FROM_SNAPSHOT);
     assertThat(restored.getSpec().getArgs()).containsExactlyElementsOf(JAR_ARGS);
     assertThat(restored.getArtifactRef()).endsWith(".jar");
   }
@@ -108,7 +116,7 @@ class ManagedFlinkRuntimeConfigurationTest {
     assertBadSpec(fixture, jar);
   }
 
-  private FrozenCommand verifyFrozenRestore(Fixture fixture, Spec spec) {
+  private FrozenCommand verifyFrozenRestore(Fixture fixture, Spec spec, RestoreMode mode) {
     fixture.jobs.validateDraft(TEAM, APP, spec);
     edit(fixture, spec, 1L);
     Command publish = fixture.command();
@@ -132,9 +140,14 @@ class ManagedFlinkRuntimeConfigurationTest {
     Command snapshot = new Command();
     snapshot.setExpectedRunId(firstRun);
     fixture.complete(fixture.enqueue(CommandType.SNAPSHOT, "snapshot", snapshot));
+    if (mode == RestoreMode.FROM_LATEST) {
+      fixture.sql.update("update t_flink_managed_snapshot set created_at=1 where app_id=?", APP);
+      fixture.complete(fixture.enqueue(CommandType.SNAPSHOT, "newer-snapshot", snapshot));
+    }
     String snapshotId =
         fixture.sql.queryForObject(
-            "select id from t_flink_managed_snapshot where app_id=? and release_id=?",
+            "select id from t_flink_managed_snapshot where app_id=? and release_id=? "
+                + "order by created_at desc limit 1",
             String.class,
             APP,
             release);
@@ -150,7 +163,12 @@ class ManagedFlinkRuntimeConfigurationTest {
     stop.setExpectedRunId(firstRun);
     fixture.complete(fixture.enqueue(CommandType.STOP, "stop", stop));
     String recovered =
-        submitStart(fixture, "snapshot-start", release, RestoreMode.FROM_SNAPSHOT, snapshotId);
+        submitStart(
+            fixture,
+            "snapshot-start",
+            release,
+            mode,
+            mode == RestoreMode.FROM_SNAPSHOT ? snapshotId : null);
     fixture.complete(recovered);
     FrozenCommand restart = frozen(fixture, recovered);
     assertThat(restart.getSpec()).isEqualTo(releaseCommand.getSpec());

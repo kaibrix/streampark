@@ -97,6 +97,10 @@ counter exceeds 15 and the same job configuration and output markers remain.
 Stop the restored test instance. A restore with an unavailable savepoint must
 leave the job stopped.
 
+The latest compatible snapshot option selects the most recent available
+snapshot of the active release. The Console freezes that snapshot ID and
+rechecks it in Volcengine before dispatching the restore.
+
 `volc-flink draft get`, `job get`, `job instance get`,
 `job instance logs`, and `savepoint list` provide independent evidence
 for these checks. Use the same test profile, project, and region for every

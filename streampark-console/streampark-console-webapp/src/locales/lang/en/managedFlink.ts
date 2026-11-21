@@ -50,7 +50,7 @@ export default {
   publishConfirm: 'Publish this version without starting an instance?',
   runs: 'Instances',
   restartNew: 'Fresh start',
-  latest: 'Restore latest',
+  latest: 'Latest compatible snapshot',
   snapshot: 'Snapshot',
   confirmNew: 'Confirm fresh start without restoring prior state',
   start: 'Start',

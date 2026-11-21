@@ -142,6 +142,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         report.put("SNAPSHOT", "AVAILABLE");
         report.put("SNAPSHOT_THEN_STOP", "AVAILABLE");
         report.put("RESTORE_FROM_SNAPSHOT", "AVAILABLE");
+        report.put("RESTORE_FROM_LATEST", "AVAILABLE");
       }
     }
     if (binding.permitsMetricReads(context)) {
@@ -503,7 +504,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       VolcengineOpenApi api, Target target, OperationStep step, boolean snapshotEnabled)
       throws IOException {
     RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
-    if (mode != RestoreMode.FROM_NEW && (mode != RestoreMode.FROM_SNAPSHOT || !snapshotEnabled)) {
+    if (mode != RestoreMode.FROM_NEW && !snapshotEnabled) {
       return rejected("UNVERIFIED_START_CONTRACT");
     }
     JsonObject published = application(api, target, step.getProviderJobId());
@@ -517,7 +518,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             step.getProviderJobId(),
             "Type",
             mode == RestoreMode.FROM_NEW ? "FROM_NEW" : "FROM_SAVEPOINT");
-    if (mode == RestoreMode.FROM_SNAPSHOT) {
+    if (mode != RestoreMode.FROM_NEW) {
       String snapshot = step.getCommand().getRestoreRef();
       if (savepointPath(api, step.getProviderJobId(), snapshot) == null) {
         return rejected("RESTORE_SNAPSHOT_NOT_VERIFIED");

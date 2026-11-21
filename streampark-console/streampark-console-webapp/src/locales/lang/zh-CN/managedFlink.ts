@@ -50,7 +50,7 @@ export default {
   publishConfirm: '确认发布此版本？实例需要单独启动。',
   runs: '实例',
   restartNew: '全新启动',
-  latest: '从最新状态恢复',
+  latest: '从最新兼容快照恢复',
   snapshot: '快照',
   confirmNew: '确认全新启动，放弃恢复此前状态',
   start: '启动',
