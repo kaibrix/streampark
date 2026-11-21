@@ -46,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -93,7 +94,7 @@ public class ManagedFlinkJobs {
         HttpStatus.BAD_REQUEST,
         "Job name must contain only letters, digits, dots, underscores, or hyphens");
     check(
-        input.getSpec().getArtifactId() == null,
+        specArtifactId(input.getSpec()) == null,
         HttpStatus.BAD_REQUEST,
         "Create the job before attaching an artifact");
     Application app = new Application();
@@ -145,8 +146,9 @@ public class ManagedFlinkJobs {
     validate(spec, false);
     Spec old = store.decode(text(job, "draft_spec"), Spec.class);
     check(old.getType() == spec.getType(), HttpStatus.CONFLICT, "Job type is fixed");
-    if (spec.getArtifactId() != null) {
-      artifact(app, spec.getArtifactId());
+    String artifactId = specArtifactId(spec);
+    if (artifactId != null) {
+      artifact(app, artifactId);
     }
     store
         .jdbc()
@@ -179,8 +181,9 @@ public class ManagedFlinkJobs {
     Map<String, Object> job = job(team, app, false);
     Spec spec = candidate == null ? store.decode(text(job, "draft_spec"), Spec.class) : candidate;
     validate(spec, true);
-    if (spec.getArtifactId() != null) {
-      artifact(app, spec.getArtifactId());
+    String artifactId = specArtifactId(spec);
+    if (artifactId != null) {
+      artifact(app, artifactId);
     }
   }
 
@@ -302,22 +305,33 @@ public class ManagedFlinkJobs {
     }
     validate(spec, true);
     capability(capabilities, "PUBLISH_" + spec.getType().name());
-    frozen.setSpec(spec);
-    String encoded = store.encode(spec);
-    if (spec.getType() == JobType.JAR) {
-      Map<String, Object> artifact = artifact(app, spec.getArtifactId());
+    if (spec.getUdfArtifactId() != null) {
+      capability(capabilities, "PUBLISH_SQL_UDF");
+    }
+    String artifactId = specArtifactId(spec);
+    if (artifactId != null) {
+      Map<String, Object> artifact = artifact(app, artifactId);
       frozen.setArtifactRef(text(artifact, "object_ref"));
       frozen.setArtifactDigest(text(artifact, "digest"));
       frozen.setArtifactSize(number(artifact, "size_bytes"));
-      if (spec.getMainClass() == null || spec.getMainClass().trim().isEmpty()) {
-        spec.setMainClass(text(artifact, "main_class"));
+      if (spec.getType() == JobType.JAR) {
+        if (spec.getMainClass() == null || spec.getMainClass().trim().isEmpty()) {
+          spec.setMainClass(text(artifact, "main_class"));
+        }
+        required(spec.getMainClass(), 255);
       }
-      required(spec.getMainClass(), 255);
-      encoded = store.encode(spec);
     }
+    frozen.setSpec(spec);
+    String encoded = store.encode(spec);
     frozen.setSpecHash(hash(encoded));
-    frozen.setActions(
-        provider.publishSteps(spec.getType(), text(job, "provider_draft_id") != null));
+    List<Action> actions =
+        new ArrayList<>(
+            provider.publishSteps(spec.getType(), text(job, "provider_draft_id") != null));
+    if (spec.getUdfArtifactId() != null) {
+      actions.remove(Action.STAGE_ARTIFACT);
+      actions.add(0, Action.STAGE_ARTIFACT);
+    }
+    frozen.setActions(actions);
     String release = id();
     Long next =
         store
@@ -584,6 +598,10 @@ public class ManagedFlinkJobs {
     }
   }
 
+  private String specArtifactId(Spec spec) {
+    return spec.getType() == JobType.SQL ? spec.getUdfArtifactId() : spec.getArtifactId();
+  }
+
   private void validate(Spec spec, boolean complete) {
     check(
         spec != null && spec.getType() != null,
@@ -594,8 +612,13 @@ public class ManagedFlinkJobs {
         required(spec.getSql(), 1_000_000);
       }
       check(spec.getArtifactId() == null, HttpStatus.BAD_REQUEST, "SQL cannot have a main JAR");
+      if (spec.getUdfArtifactId() != null) {
+        required(spec.getUdfArtifactId(), 36);
+      }
     } else {
       check(spec.getSql() == null, HttpStatus.BAD_REQUEST, "JAR cannot have SQL text");
+      check(
+          spec.getUdfArtifactId() == null, HttpStatus.BAD_REQUEST, "UDF dependencies require SQL");
       if (complete) {
         required(spec.getArtifactId(), 36);
       }

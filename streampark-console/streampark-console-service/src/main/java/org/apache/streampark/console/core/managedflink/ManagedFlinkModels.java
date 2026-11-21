@@ -18,6 +18,7 @@
 package org.apache.streampark.console.core.managedflink;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.ToString;
@@ -132,6 +133,10 @@ public final class ManagedFlinkModels {
     private JobType type;
     private String sql;
     private String artifactId;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String udfArtifactId;
+
     private String mainClass;
     private List<String> args = new ArrayList<>();
     private Map<String, String> configuration = new LinkedHashMap<>();

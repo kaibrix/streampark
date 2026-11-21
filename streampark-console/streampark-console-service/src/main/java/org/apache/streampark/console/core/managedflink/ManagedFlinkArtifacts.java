@@ -39,7 +39,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
-import java.util.Map;
 import java.util.Objects;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
@@ -124,13 +123,7 @@ class ManagedFlinkArtifacts {
   private String capture(long team, long app, long size, ArtifactSource source, Runnable verify)
       throws IOException {
     catalog.authorize(team, "app:update");
-    Map<String, Object> job = jobs.job(team, app, false);
-    ManagedFlinkModels.Spec spec =
-        store.decode(text(job, "draft_spec"), ManagedFlinkModels.Spec.class);
-    check(
-        spec.getType() == ManagedFlinkModels.JobType.JAR,
-        HttpStatus.CONFLICT,
-        "Expected a JAR job");
+    jobs.job(team, app, false);
     check(
         !directory.trim().isEmpty(),
         HttpStatus.UNPROCESSABLE_ENTITY,

@@ -59,6 +59,7 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
         Arrays.asList(
             "IDENTITY",
             "PUBLISH_SQL",
+            "PUBLISH_SQL_UDF",
             "PUBLISH_JAR",
             "START",
             "STOP",
