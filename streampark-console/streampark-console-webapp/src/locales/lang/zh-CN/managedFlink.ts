@@ -71,6 +71,7 @@ export default {
   logFrom: '日志开始时间',
   logUntil: '日志结束时间',
   loadLogs: '查询实例日志',
+  openVolcengineConsole: '打开火山引擎 Flink 控制台',
   nextLogPage: '下一页日志',
   logStatus: {
     AVAILABLE: '火山引擎 TLS 日志',

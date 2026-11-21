@@ -72,6 +72,7 @@ export default {
   logFrom: 'Log start time',
   logUntil: 'Log end time',
   loadLogs: 'Search instance logs',
+  openVolcengineConsole: 'Open Volcengine Flink console',
   nextLogPage: 'Next log page',
   logStatus: {
     AVAILABLE: 'Volcengine TLS logs',

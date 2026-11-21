@@ -527,7 +527,21 @@
           </List>
         </TabPane>
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
-          <p>{{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}</p>
+          <p>
+            {{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}
+            <a
+              v-if="
+                environment?.provider === 'volcengine' &&
+                !can('LOG_SEARCH') &&
+                hasPermission('app:log')
+              "
+              class="ml-2"
+              href="https://console.volcengine.com/flink"
+              target="_blank"
+              rel="noopener noreferrer"
+              >{{ t('managedFlink.openVolcengineConsole') }}</a
+            >
+          </p>
           <div v-if="can('LOG_SEARCH') && runs.length && hasPermission('app:log')" class="mb-6">
             <Space wrap>
               <Select
