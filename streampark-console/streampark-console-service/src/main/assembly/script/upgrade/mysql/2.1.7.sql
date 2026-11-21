@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_job (
   sync_status varchar(24) NOT NULL DEFAULT 'STALE',
   next_observe_at bigint NOT NULL DEFAULT 0,
   missing_reads int NOT NULL DEFAULT 0,
+  read_failures int NOT NULL DEFAULT 0,
   observed_at bigint,
   archived boolean NOT NULL DEFAULT false,
   UNIQUE (scope_key, provider_job_id),
@@ -69,6 +70,18 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_job (
   FOREIGN KEY (environment_id) REFERENCES t_flink_managed_env (id),
   KEY idx_managed_job_team (team_id, environment_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+SET @managed_read_failures = (
+  SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE t_flink_managed_job ADD COLUMN read_failures int NOT NULL DEFAULT 0',
+    'SELECT 1')
+  FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_flink_managed_job'
+    AND COLUMN_NAME = 'read_failures'
+);
+PREPARE managed_read_failures_stmt FROM @managed_read_failures;
+EXECUTE managed_read_failures_stmt;
+DEALLOCATE PREPARE managed_read_failures_stmt;
 
 CREATE TABLE IF NOT EXISTS t_flink_managed_artifact (
   id varchar(36) PRIMARY KEY,

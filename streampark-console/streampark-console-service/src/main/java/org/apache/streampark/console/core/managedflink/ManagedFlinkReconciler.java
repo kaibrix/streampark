@@ -33,6 +33,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.id;
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.number;
@@ -44,6 +45,9 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 class ManagedFlinkReconciler {
 
   private static final List<String> TERMINAL = Arrays.asList("STOPPED", "FAILED", "FINISHED");
+  private static final long OBSERVE_INTERVAL_MS = 30_000;
+  private static final long MAX_BACKOFF_MS = 15 * 60_000;
+  private static final int MAX_READ_FAILURES = 5;
   private final ManagedFlinkStore store;
   private final ManagedFlinkCatalog catalog;
   private final TransactionTemplate tx;
@@ -67,7 +71,7 @@ class ManagedFlinkReconciler {
                 now)) {
       long app = number(job, "app_id");
       long team = number(job, "team_id");
-      long next = now + 30_000;
+      long next = System.currentTimeMillis() + OBSERVE_INTERVAL_MS;
       if (store
               .jdbc()
               .update(
@@ -79,10 +83,10 @@ class ManagedFlinkReconciler {
           == 0) {
         continue;
       }
-      Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
-      Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
       CloudState observed;
       try {
+        Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+        Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
         observed =
             catalog
                 .provider(text(conn, "provider"))
@@ -105,7 +109,7 @@ class ManagedFlinkReconciler {
                     next);
             if (current != null
                 && Objects.equals(text(current, "observed_at"), text(job, "observed_at"))) {
-              apply(current, state, now);
+              apply(current, state, System.currentTimeMillis());
             }
           });
     }
@@ -114,34 +118,15 @@ class ManagedFlinkReconciler {
   void apply(Map<String, Object> job, CloudState state, long now) {
     long app = number(job, "app_id");
     if (state.getStatus() != ReadStatus.FOUND) {
-      long missing = state.getStatus() == ReadStatus.MISSING ? number(job, "missing_reads") + 1 : 0;
-      String status =
-          missing >= 2
-              ? "MISSING"
-              : state.getStatus() == ReadStatus.AUTH_ERROR ? "AUTH_ERROR" : "STALE";
-      // Preserve a previously confirmed drift or missing state through transport failures.
-      if (Arrays.asList("MISSING", "DRIFTED").contains(text(job, "sync_status"))) {
-        status = text(job, "sync_status");
-      }
-      store
-          .jdbc()
-          .update(
-              "update t_flink_managed_job set sync_status=?,missing_reads=? where app_id=?",
-              status,
-              missing,
-              app);
+      recordReadFailure(job, state.getStatus(), state.getRetryNotBefore(), now);
       return;
     }
     if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
       return;
     }
     if (olderInstance(job, state)) {
-      if (!TERMINAL.contains(state.getRunState())
-          && !Arrays.asList("MISSING", "DRIFTED").contains(text(job, "sync_status"))) {
-        // Do not replace newer history or report it as fresh when an older run appears active.
-        store
-            .jdbc()
-            .update("update t_flink_managed_job set sync_status='STALE' where app_id=?", app);
+      if (!TERMINAL.contains(state.getRunState())) {
+        recordReadFailure(job, ReadStatus.STALE, 0, now);
       }
       return;
     }
@@ -157,14 +142,45 @@ class ManagedFlinkReconciler {
     store
         .jdbc()
         .update(
-            "update t_flink_managed_job set sync_status=?,observed_at=?,missing_reads=0 "
-                + "where app_id=?",
+            "update t_flink_managed_job set sync_status=?,observed_at=?,missing_reads=0,"
+                + "read_failures=0,next_observe_at=? where app_id=?",
             match ? "FRESH" : "DRIFTED",
             now,
+            now + OBSERVE_INTERVAL_MS,
             app);
     if (state.getInstanceId() != null && !state.getInstanceId().trim().isEmpty()) {
       projectRun(app, state, now);
     }
+  }
+
+  private void recordReadFailure(
+      Map<String, Object> job, ReadStatus result, long retryNotBefore, long now) {
+    long missing = result == ReadStatus.MISSING ? Math.min(2, number(job, "missing_reads") + 1) : 0;
+    String status = "STALE";
+    if (missing >= 2) {
+      status = "MISSING";
+    } else if (result == ReadStatus.AUTH_ERROR || result == ReadStatus.THROTTLED) {
+      status = result.name();
+    }
+    String current = text(job, "sync_status");
+    // Preserve a confirmed drift or missing state through transport failures.
+    if ("MISSING".equals(current) || "DRIFTED".equals(current)) {
+      status = current;
+    }
+    int failures = (int) Math.min(MAX_READ_FAILURES, number(job, "read_failures") + 1);
+    long delay = Math.min(MAX_BACKOFF_MS, OBSERVE_INTERVAL_MS << failures);
+    long jitter = ThreadLocalRandom.current().nextLong(delay / 5 + 1);
+    long next = Math.max(retryNotBefore, now + Math.min(MAX_BACKOFF_MS, delay + jitter));
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_job set sync_status=?,missing_reads=?,read_failures=?,"
+                + "next_observe_at=? where app_id=?",
+            status,
+            missing,
+            failures,
+            next,
+            number(job, "app_id"));
   }
 
   private boolean olderInstance(Map<String, Object> job, CloudState state) {

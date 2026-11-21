@@ -556,6 +556,61 @@ class ManagedFlinkLifecycleTest {
     assertThat(test.jobField("current_run_id")).isEqualTo(current);
   }
 
+  @Test
+  void keepsConfirmedStateWhileBackingOffAndResetsAfterASuccessfulRead() {
+    MockManagedFlinkProvider provider = new MockManagedFlinkProvider();
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String version =
+        test.sql.queryForObject(
+            "select provider_version from t_flink_managed_release", String.class);
+    CloudState healthy =
+        new CloudState(ReadStatus.FOUND, job, version, "run", "runtime", "RUNNING", 2000);
+    provider.recordState(healthy);
+    test.reconciler.refresh();
+    String latestRead = test.jobField("observed_at");
+    String activeRelease = test.jobField("active_release_id");
+    String currentRun = test.jobField("current_run_id");
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+    assertThat(currentRun).isNotBlank();
+
+    long now = System.currentTimeMillis();
+    CloudState failed = new CloudState(ReadStatus.THROTTLED, job, null, null, null, null, 0);
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), failed, now);
+    assertThat(test.jobField("sync_status")).isEqualTo("THROTTLED");
+    assertThat(Long.parseLong(test.jobField("next_observe_at")) - now).isBetween(60_000L, 72_000L);
+    assertThat(test.jobField("read_failures")).isEqualTo("1");
+
+    // The healthy provider still answers, but the next scheduled poll is not due.
+    test.reconciler.refresh();
+    assertThat(test.jobField("sync_status")).isEqualTo("THROTTLED");
+
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), failed, now);
+    assertThat(Long.parseLong(test.jobField("next_observe_at")) - now)
+        .isBetween(120_000L, 144_000L);
+    assertThat(test.jobField("read_failures")).isEqualTo("2");
+
+    long serverRetry = now + 20 * 60_000;
+    CloudState unavailable =
+        new CloudState(ReadStatus.AUTH_ERROR, job, null, null, null, null, 0, serverRetry);
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), unavailable, now);
+    assertThat(test.jobField("sync_status")).isEqualTo("AUTH_ERROR");
+    assertThat(test.jobField("next_observe_at")).isEqualTo(Long.toString(serverRetry));
+    assertThat(test.jobField("observed_at")).isEqualTo(latestRead);
+    assertThat(test.jobField("active_release_id")).isEqualTo(activeRelease);
+    assertThat(test.jobField("current_run_id")).isEqualTo(currentRun);
+    assertThat(test.jobField("pending_operation_id")).isNull();
+
+    test.sql.update("update t_flink_managed_job set next_observe_at=0");
+    test.reconciler.refresh();
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+    assertThat(test.jobField("read_failures")).isEqualTo("0");
+    assertThat(Long.parseLong(test.jobField("next_observe_at")))
+        .isEqualTo(Long.parseLong(test.jobField("observed_at")) + 30_000);
+    assertThat(test.jobField("current_run_id")).isEqualTo(currentRun);
+  }
+
   static final class Fixture {
     final JdbcTemplate sql;
     final TransactionTemplate tx;

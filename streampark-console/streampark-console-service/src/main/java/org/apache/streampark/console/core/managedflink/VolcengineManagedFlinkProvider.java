@@ -27,6 +27,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcom
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
+import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.ReadFailure;
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
 import com.google.gson.JsonArray;
@@ -266,6 +267,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           current == null ? null : text(current, "ApplicationId"),
           current == null ? null : text(current, "State"),
           current == null ? 0 : startedAt(current));
+    } catch (ReadFailure failure) {
+      return new CloudState(
+          failure.status, jobId, null, null, null, null, 0, failure.retryNotBefore);
     } catch (IOException | RuntimeException e) {
       return readFailure(jobId, ReadStatus.STALE);
     }
@@ -792,6 +796,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       return null;
     }
     Reply reply = api.call("GetGWSApplicationDraft", GWS_VERSION, scope(target), fields("Id", id));
+    reply.checkReadBackoff();
     JsonObject record = reply.data();
     return reply.ok()
             && scoped(record, target, id)
@@ -811,6 +816,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             GWS_VERSION,
             Collections.emptyMap(),
             fields("Id", id, "ProjectId", target.getProjectId()));
+    reply.checkReadBackoff();
     JsonObject application = reply.data();
     if (!reply.ok()
         || !scoped(application, target, id)
@@ -916,23 +922,26 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private Reply instances(VolcengineOpenApi api, Target target, String job, int page)
       throws IOException {
-    return api.call(
-        "ListApplicationInstance",
-        FLINK_VERSION,
-        Collections.emptyMap(),
-        fields(
-            "ProjectId",
-            target.getProjectId(),
-            "JobId",
-            Long.parseLong(job),
-            "PageNum",
-            Integer.toString(page),
-            "PageSize",
-            Integer.toString(INSTANCE_PAGE_SIZE),
-            "SortField",
-            "StartTime",
-            "SortOrder",
-            "desc"));
+    Reply reply =
+        api.call(
+            "ListApplicationInstance",
+            FLINK_VERSION,
+            Collections.emptyMap(),
+            fields(
+                "ProjectId",
+                target.getProjectId(),
+                "JobId",
+                Long.parseLong(job),
+                "PageNum",
+                Integer.toString(page),
+                "PageSize",
+                Integer.toString(INSTANCE_PAGE_SIZE),
+                "SortField",
+                "StartTime",
+                "SortOrder",
+                "desc"));
+    reply.checkReadBackoff();
+    return reply;
   }
 
   private Reply listJobs(VolcengineOpenApi api, Target target, String name) throws IOException {

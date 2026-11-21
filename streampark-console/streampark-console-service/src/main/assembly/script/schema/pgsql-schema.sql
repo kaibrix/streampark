@@ -846,6 +846,7 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_job (
   sync_status varchar(24) NOT NULL DEFAULT 'STALE',
   next_observe_at bigint NOT NULL DEFAULT 0,
   missing_reads int NOT NULL DEFAULT 0,
+  read_failures int NOT NULL DEFAULT 0,
   observed_at bigint,
   archived boolean NOT NULL DEFAULT false,
   UNIQUE (scope_key, provider_job_id)

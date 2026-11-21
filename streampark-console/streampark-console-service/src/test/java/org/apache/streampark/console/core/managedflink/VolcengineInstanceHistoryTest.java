@@ -117,6 +117,44 @@ class VolcengineInstanceHistoryTest {
     assertThat(overBudget.requestedPages).containsExactly(1);
   }
 
+  @Test
+  void propagatesThrottlingAuthorizationAndRetryAfterThroughEveryRead() {
+    long now = System.currentTimeMillis();
+    Fixture throttled =
+        new Fixture(page -> history(1, 51, 101, 50), "ListApplicationInstance", 2, 429, "120");
+    CloudState limited = throttled.inspect();
+    assertThat(limited.getStatus()).isEqualTo(ReadStatus.THROTTLED);
+    assertThat(limited.getRetryNotBefore())
+        .isBetween(now + 120_000, System.currentTimeMillis() + 120_000);
+    assertThat(throttled.requestedPages).containsExactly(1, 2);
+
+    Fixture denied =
+        new Fixture(page -> history(1, 0, 0, 0), "GetGWSApplicationDraft", 0, 403, null);
+    assertThat(denied.inspect().getStatus()).isEqualTo(ReadStatus.AUTH_ERROR);
+    assertThat(denied.requestedPages).isEmpty();
+
+    Fixture unavailable =
+        new Fixture(
+            page -> history(1, 0, 0, 0),
+            "GetGWSApplication",
+            0,
+            503,
+            "Wed, 21 Oct 2037 07:28:00 GMT");
+    CloudState stale = unavailable.inspect();
+    assertThat(stale.getStatus()).isEqualTo(ReadStatus.STALE);
+    assertThat(stale.getRetryNotBefore()).isEqualTo(2_139_722_880_000L);
+  }
+
+  @Test
+  void ignoresInvalidExpiredAndOverflowingRetryAfter() {
+    long now = 2_139_722_880_000L;
+    assertThat(VolcengineOpenApi.retryNotBefore(" 20 ", now)).isEqualTo(now + 20_000);
+    for (String value :
+        List.of("", "0", "-1", "3.5", "9223372036854775807", "Wed, 21 Oct 2015 07:28:00 GMT")) {
+      assertThat(VolcengineOpenApi.retryNotBefore(value, now)).isZero();
+    }
+  }
+
   private static JsonObject history(int page, int total, int first, int size) {
     return history(page, total, first, size, "STOPPED");
   }
@@ -148,6 +186,15 @@ class VolcengineInstanceHistoryTest {
     private final List<Integer> requestedPages = new ArrayList<>();
 
     Fixture(IntFunction<JsonObject> responses) {
+      this(responses, null, 0, 0, null);
+    }
+
+    Fixture(
+        IntFunction<JsonObject> responses,
+        String failingAction,
+        int failingPage,
+        int status,
+        String retryAfter) {
       Target target = new Target();
       target.setProjectId("project");
       target.setDirectoryId("dir");
@@ -159,7 +206,12 @@ class VolcengineInstanceHistoryTest {
           .add(
               chain -> {
                 String action = chain.request().httpUrl().queryParameter("Action");
+                Response.Builder response =
+                    new Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1);
                 JsonObject result;
+                if (action.equals(failingAction) && failingPage == 0) {
+                  return error(response, status, retryAfter);
+                }
                 switch (action) {
                   case "GetGWSApplication":
                     result =
@@ -183,6 +235,9 @@ class VolcengineInstanceHistoryTest {
                     assertThat(query.get("SortOrder").getAsString()).isEqualTo("desc");
                     int page = query.get("PageNum").getAsInt();
                     requestedPages.add(page);
+                    if (action.equals(failingAction) && page == failingPage) {
+                      return error(response, status, retryAfter);
+                    }
                     result = responses.apply(page);
                     if (result == null) {
                       throw new IOException("Fixture page read failed");
@@ -193,9 +248,7 @@ class VolcengineInstanceHistoryTest {
                 }
                 JsonObject envelope = json("{\"ResponseMetadata\":{\"RequestId\":\"fixture\"}}");
                 envelope.add("Result", result);
-                return new Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
+                return response
                     .code(200)
                     .message("OK")
                     .body(
@@ -219,6 +272,17 @@ class VolcengineInstanceHistoryTest {
 
     CloudState inspect() {
       return provider.inspect(context, "31");
+    }
+
+    private static Response error(Response.Builder response, int status, String retryAfter) {
+      if (retryAfter != null) {
+        response.header("Retry-After", retryAfter);
+      }
+      return response
+          .code(status)
+          .message("Unavailable")
+          .body(ResponseBody.create(MediaType.parse("text/plain"), "Gateway failure"))
+          .build();
     }
   }
 

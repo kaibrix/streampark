@@ -17,6 +17,8 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -34,6 +36,9 @@ import com.volcengine.sign.VolcstackSign;
 
 import java.io.IOException;
 import java.net.Proxy;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -141,6 +146,8 @@ final class VolcengineOpenApi {
       request.post(RequestBody.create(JSON, payload));
     }
     Response response = transport.newCall(request.build()).execute();
+    int status = response.code();
+    long retry = retryNotBefore(response.header("Retry-After"), System.currentTimeMillis());
     try (ResponseBody entity = response.body()) {
       if (entity == null
           || entity.contentLength() > MAX_RESPONSE_BYTES
@@ -152,13 +159,35 @@ final class VolcengineOpenApi {
       JsonObject error = object(meta, "Error");
       String requestId = text(meta, "RequestId");
       return new Reply(
-          response.code(),
+          status,
           root.get("Result"),
           requestId,
           text(error, "Code"),
-          requestId != null && !requestId.isEmpty() && !meta.has("Error"));
-    } catch (RuntimeException e) {
+          requestId != null && !requestId.isEmpty() && !meta.has("Error"),
+          retry);
+    } catch (IOException | RuntimeException e) {
+      if (status < 200 || status >= 300) {
+        return new Reply(status, null, null, null, false, retry);
+      }
       throw new IOException("Invalid Volcengine response envelope");
+    }
+  }
+
+  static long retryNotBefore(String header, long now) {
+    if (header == null) {
+      return 0;
+    }
+    String value = header.trim();
+    try {
+      long retry =
+          value.matches("[0-9]+")
+              ? Math.addExact(now, Math.multiplyExact(1000L, Long.parseLong(value)))
+              : ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME)
+                  .toInstant()
+                  .toEpochMilli();
+      return retry > now ? retry : 0;
+    } catch (DateTimeParseException | NumberFormatException | ArithmeticException e) {
+      return 0;
     }
   }
 
@@ -172,12 +201,24 @@ final class VolcengineOpenApi {
     return element != null && element.isJsonPrimitive() ? element.getAsString() : null;
   }
 
+  static final class ReadFailure extends IOException {
+    final ReadStatus status;
+    final long retryNotBefore;
+
+    private ReadFailure(ReadStatus status, long retryNotBefore) {
+      super("Volcengine read failed: " + status);
+      this.status = status;
+      this.retryNotBefore = retryNotBefore;
+    }
+  }
+
   static final class Reply {
     final int httpStatus;
     final JsonElement result;
     final String requestId;
     final String errorCode;
     final boolean businessSuccess;
+    final long retryNotBefore;
 
     Reply(
         int status,
@@ -185,15 +226,38 @@ final class VolcengineOpenApi {
         String requestId,
         String errorCode,
         boolean businessSuccess) {
+      this(status, result, requestId, errorCode, businessSuccess, 0);
+    }
+
+    Reply(
+        int status,
+        JsonElement result,
+        String requestId,
+        String errorCode,
+        boolean businessSuccess,
+        long retryNotBefore) {
       this.httpStatus = status;
       this.result = result;
       this.requestId = requestId;
       this.errorCode = errorCode;
       this.businessSuccess = businessSuccess;
+      this.retryNotBefore = retryNotBefore;
     }
 
     boolean ok() {
       return httpStatus >= 200 && httpStatus < 300 && businessSuccess;
+    }
+
+    void checkReadBackoff() throws ReadFailure {
+      if (httpStatus == 429) {
+        throw new ReadFailure(ReadStatus.THROTTLED, retryNotBefore);
+      }
+      if (httpStatus == 401 || httpStatus == 403) {
+        throw new ReadFailure(ReadStatus.AUTH_ERROR, retryNotBefore);
+      }
+      if (!ok() && retryNotBefore != 0) {
+        throw new ReadFailure(ReadStatus.STALE, retryNotBefore);
+      }
     }
 
     JsonObject data() {

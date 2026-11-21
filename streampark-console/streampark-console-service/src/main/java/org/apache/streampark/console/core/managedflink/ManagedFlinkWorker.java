@@ -25,7 +25,6 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Frozen
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
-import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -263,8 +262,14 @@ class ManagedFlinkWorker {
     if (state == null) {
       return null;
     }
-    if (state.getStatus() != ReadStatus.FOUND) {
-      return state.getStatus() == ReadStatus.AUTH_ERROR ? "AUTH_ERROR" : "STALE";
+    switch (state.getStatus()) {
+      case AUTH_ERROR:
+      case THROTTLED:
+        return state.getStatus().name();
+      case FOUND:
+        break;
+      default:
+        return "STALE";
     }
     Map<String, Object> release = jobs.release(step.getAppId(), text(job, "active_release_id"));
     if (!Objects.equals(step.getProviderJobId(), state.getJobId())

@@ -20,6 +20,7 @@ package org.apache.streampark.console.core.managedflink;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.ToString;
 import lombok.Value;
@@ -244,10 +245,12 @@ public final class ManagedFlinkModels {
     FOUND,
     MISSING,
     STALE,
-    AUTH_ERROR
+    AUTH_ERROR,
+    THROTTLED
   }
 
   @Value
+  @AllArgsConstructor
   public static class CloudState {
     ReadStatus status;
     String jobId;
@@ -256,6 +259,18 @@ public final class ManagedFlinkModels {
     String runtimeId;
     String runState;
     long startedAt;
+    long retryNotBefore;
+
+    public CloudState(
+        ReadStatus status,
+        String jobId,
+        String version,
+        String instanceId,
+        String runtimeId,
+        String runState,
+        long startedAt) {
+      this(status, jobId, version, instanceId, runtimeId, runState, startedAt, 0);
+    }
   }
 
   @Data
