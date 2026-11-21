@@ -481,6 +481,9 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_env (
   region varchar(64) NOT NULL,
   target text NOT NULL,
   config_version int NOT NULL DEFAULT 1,
+  capability_report text,
+  capability_credential_version int,
+  capability_observed_at bigint,
   enabled boolean NOT NULL DEFAULT true,
   UNIQUE (team_id, name)
 );

@@ -32,6 +32,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -47,6 +49,16 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 
 @Service
 public class ManagedFlinkCatalog {
+
+  private static final List<String> PROBED_READ_CAPABILITIES =
+      Arrays.asList(
+          "IDENTITY",
+          "DIRECTORY_READ",
+          "RESOURCE_POOL_READ",
+          "PROJECT_JOB_READ",
+          "ARTIFACT_RUNTIME_READ",
+          "LOG_SEARCH",
+          "METRICS");
 
   private final ManagedFlinkStore store;
   private final ServiceHelper login;
@@ -144,8 +156,36 @@ public class ManagedFlinkCatalog {
     authorize(team, "team:update");
     Map<String, Object> environment = environment(team, env, false);
     Map<String, Object> connection = connection(team, text(environment, "connection_id"));
-    return provider(text(connection, "provider"))
-        .capabilities(context(connection, environment, null));
+    Map<String, String> report =
+        provider(text(connection, "provider")).capabilities(context(connection, environment, null));
+    ReadReport reads = new ReadReport();
+    for (String capability : PROBED_READ_CAPABILITIES) {
+      if (report.containsKey(capability)) {
+        reads.put(capability, report.get(capability));
+      }
+    }
+    long credentialVersion = number(connection, "credential_version");
+    int refreshed =
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_env set capability_report=?,capability_observed_at=?,"
+                    + "capability_credential_version=? where team_id=? and id=? and config_version=? "
+                    + "and exists (select 1 from t_flink_cloud_connection where id=? and team_id=? "
+                    + "and credential_version=?)",
+                store.encode(reads),
+                System.currentTimeMillis(),
+                credentialVersion,
+                team,
+                env,
+                number(environment, "config_version"),
+                connection.get("id"),
+                team,
+                credentialVersion);
+    check(refreshed == 1, HttpStatus.CONFLICT, "Environment or credentials changed during probe");
+    Map<String, String> scopedReport = baseCapabilities(environment, connection);
+    scopedReport.putAll(reads);
+    return scopedReport;
   }
 
   public Map<String, String> rotateConnection(
@@ -191,7 +231,9 @@ public class ManagedFlinkCatalog {
         .jdbc()
         .queryForList(
             "select e.id,e.name,e.region,e.enabled,e.target,"
-                + "e.connection_id as \"connectionId\", e.config_version as \"configVersion\", c.provider "
+                + "e.connection_id as \"connectionId\", e.config_version as \"configVersion\", c.provider, "
+                + "case when e.capability_credential_version=c.credential_version "
+                + "then e.capability_observed_at end as \"capabilitiesObservedAt\" "
                 + "from t_flink_managed_env e join t_flink_cloud_connection c on c.id=e.connection_id "
                 + "and c.team_id=e.team_id where e.team_id=? order by e.name, e.id limit 100 offset ?",
             team,
@@ -244,7 +286,8 @@ public class ManagedFlinkCatalog {
         .jdbc()
         .update(
             "update t_flink_managed_env set name=?,target=?,enabled=?,"
-                + "config_version=config_version+1 where team_id=? and id=?",
+                + "config_version=config_version+1,capability_report=null,capability_observed_at=null,"
+                + "capability_credential_version=null where team_id=? and id=?",
             name,
             store.encode(target),
             enabled,
@@ -257,9 +300,26 @@ public class ManagedFlinkCatalog {
     authorize(team, "app:view");
     Map<String, Object> env = environment(team, environmentId, false);
     Map<String, Object> conn = connection(team, text(env, "connection_id"));
-    return provider(text(conn, "provider"))
-        .capabilities(
-            new Context(text(env, "region"), text(conn, "account_ref"), target(env), null));
+    Map<String, String> report = baseCapabilities(env, conn);
+    String saved = text(env, "capability_report");
+    if (saved != null
+        && Objects.equals(
+            text(env, "capability_credential_version"), text(conn, "credential_version"))) {
+      ReadReport reads = store.decode(saved, ReadReport.class);
+      for (String capability : PROBED_READ_CAPABILITIES) {
+        if (reads.containsKey(capability)) {
+          report.put(capability, reads.get(capability));
+        }
+      }
+    }
+    return report;
+  }
+
+  private Map<String, String> baseCapabilities(Map<String, Object> env, Map<String, Object> conn) {
+    return new LinkedHashMap<>(
+        provider(text(conn, "provider"))
+            .capabilities(
+                new Context(text(env, "region"), text(conn, "account_ref"), target(env), null)));
   }
 
   Map<String, Object> connection(long team, String id) {
@@ -316,6 +376,10 @@ public class ManagedFlinkCatalog {
   private Credentials supplied(ConnectionInput input) {
     return new Credentials(
         required(input.getAccessKey(), 512), required(input.getSecretKey(), 512));
+  }
+
+  private static class ReadReport extends LinkedHashMap<String, String> {
+    private static final long serialVersionUID = 1L;
   }
 
   private String binding(long team, String id, String account) {

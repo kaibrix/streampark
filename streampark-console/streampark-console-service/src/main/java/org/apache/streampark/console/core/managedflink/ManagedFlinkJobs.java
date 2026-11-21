@@ -37,6 +37,7 @@ import org.apache.streampark.console.core.service.ApplicationService;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Arrays;
@@ -172,7 +173,7 @@ public class ManagedFlinkJobs {
     }
   }
 
-  @Transactional
+  @Transactional(isolation = Isolation.READ_COMMITTED)
   public String enqueue(long team, long app, CommandType type, String key, Command cmd) {
     long actor = catalog.authorize(team, permission(type));
     key = required(key, 128);
