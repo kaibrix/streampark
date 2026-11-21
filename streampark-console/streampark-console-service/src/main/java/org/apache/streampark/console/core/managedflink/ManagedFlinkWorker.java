@@ -34,6 +34,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import javax.annotation.PreDestroy;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -44,6 +46,9 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.id;
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.number;
@@ -60,6 +65,7 @@ class ManagedFlinkWorker {
   private final ManagedFlinkJobs jobs;
   private final TransactionTemplate tx;
   private final String owner = id();
+  private final ScheduledThreadPoolExecutor renewals;
 
   ManagedFlinkWorker(
       ManagedFlinkStore store,
@@ -70,6 +76,20 @@ class ManagedFlinkWorker {
     this.catalog = catalog;
     this.jobs = jobs;
     this.tx = new TransactionTemplate(manager);
+    this.renewals =
+        new ScheduledThreadPoolExecutor(
+            1,
+            runnable -> {
+              Thread thread = new Thread(runnable, "managed-flink-lease");
+              thread.setDaemon(true);
+              return thread;
+            });
+    renewals.setRemoveOnCancelPolicy(true);
+  }
+
+  @PreDestroy
+  void stopRenewals() {
+    renewals.shutdownNow();
   }
 
   @Scheduled(fixedDelayString = "${streampark.managed-flink.worker-delay-ms:1000}")
@@ -98,13 +118,29 @@ class ManagedFlinkWorker {
   }
 
   void advance(String operation) {
-    Map<String, Object> op = claim(operation);
+    advance(operation, LEASE_MS);
+  }
+
+  void advance(String operation, long leaseMs) {
+    Map<String, Object> op = claim(operation, leaseMs);
     if (op == null) {
       return;
     }
+    long epoch = number(op, "lease_epoch");
+    long interval = Math.max(1, leaseMs / 3);
+    ScheduledFuture<?> renewal =
+        renewals.scheduleWithFixedDelay(
+            () -> renewLease(operation, epoch, leaseMs), interval, interval, TimeUnit.MILLISECONDS);
+    try {
+      advanceClaimed(operation, op, epoch);
+    } finally {
+      renewal.cancel(false);
+    }
+  }
+
+  private void advanceClaimed(String operation, Map<String, Object> op, long epoch) {
     long app = number(op, "app_id");
     long team = number(op, "team_id");
-    long epoch = number(op, "lease_epoch");
     int index = (int) number(op, "step_index");
     FrozenCommand command = store.decode(text(op, "command"), FrozenCommand.class);
     Map<String, Object> job = jobs.job(team, app, false);
@@ -174,7 +210,7 @@ class ManagedFlinkWorker {
             });
         return;
       }
-      if (!Boolean.TRUE.equals(tx.execute(t -> markDispatch(step, epoch, index)))) {
+      if (!Boolean.TRUE.equals(tx.execute(t -> markDispatch(step, op, epoch, index)))) {
         return;
       }
       Observation response;
@@ -278,8 +314,9 @@ class ManagedFlinkWorker {
     }
   }
 
-  private Map<String, Object> claim(String operation) {
+  private Map<String, Object> claim(String operation, long leaseMs) {
     long now = System.currentTimeMillis();
+    long until = now + leaseMs;
     return tx.execute(
         t -> {
           int changed =
@@ -287,11 +324,14 @@ class ManagedFlinkWorker {
                   .jdbc()
                   .update(
                       "update t_flink_managed_operation set status='EXECUTING',"
-                          + "lease_owner=?,lease_until=?,lease_epoch=lease_epoch+1,updated_at=? where id=? "
+                          + "lease_owner=?,lease_until=case when deadline_at>? and deadline_at<? "
+                          + "then deadline_at else ? end,lease_epoch=lease_epoch+1,updated_at=? where id=? "
                           + "and status in ('PENDING','EXECUTING','WAITING_PROVIDER') and next_run_at<=? "
                           + "and (lease_until is null or lease_until<=?)",
                       owner,
-                      now + LEASE_MS,
+                      now,
+                      until,
+                      until,
                       now,
                       operation,
                       now,
@@ -302,15 +342,44 @@ class ManagedFlinkWorker {
         });
   }
 
+  private void renewLease(String operation, long epoch, long leaseMs) {
+    try {
+      tx.executeWithoutResult(
+          t -> {
+            Map<String, Object> lease = lockedLease(operation, epoch);
+            if (lease == null) {
+              return;
+            }
+            long now = System.currentTimeMillis();
+            long previous = number(lease, "lease_until");
+            long until = Math.min(number(lease, "deadline_at"), now + leaseMs);
+            if (previous > now && until > previous) {
+              store
+                  .jdbc()
+                  .update(
+                      "update t_flink_managed_operation set lease_until=? where id=?",
+                      until,
+                      operation);
+            }
+          });
+    } catch (RuntimeException e) {
+      log.debug(
+          "Could not renew managed Flink lease {} ({})", operation, e.getClass().getSimpleName());
+    }
+  }
+
   private boolean owns(String operation, long epoch) {
+    Map<String, Object> lease = lockedLease(operation, epoch);
+    return lease != null && number(lease, "lease_until") > System.currentTimeMillis();
+  }
+
+  private Map<String, Object> lockedLease(String operation, long epoch) {
     return store.find(
-            "select id from t_flink_managed_operation where id=? and lease_owner=? "
-                + "and lease_epoch=? and lease_until>? and status='EXECUTING' for update",
-            operation,
-            owner,
-            epoch,
-            System.currentTimeMillis())
-        != null;
+        "select lease_until,deadline_at from t_flink_managed_operation where id=? "
+            + "and lease_owner=? and lease_epoch=? and status='EXECUTING' for update",
+        operation,
+        owner,
+        epoch);
   }
 
   private Map<String, Object> attempt(String operation, int index) {
@@ -331,8 +400,12 @@ class ManagedFlinkWorker {
         : store.decode(text(stage, "result"), Observation.class).getArtifactRef();
   }
 
-  private boolean markDispatch(OperationStep step, long epoch, int index) {
+  private boolean markDispatch(OperationStep step, Map<String, Object> op, long epoch, int index) {
     if (!owns(step.getOperationId(), epoch)) {
+      return false;
+    }
+    if (System.currentTimeMillis() >= number(op, "deadline_at")) {
+      finish(op, "FAILED");
       return false;
     }
     store

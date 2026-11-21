@@ -97,6 +97,42 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void liveWorkerRenewsItsLeaseWhileWaitingForProvider() throws Exception {
+    RecordingProvider provider = new RecordingProvider(true, true);
+    Fixture test = new Fixture(provider);
+    String operation = test.publish("heartbeat", test.command());
+    test.reachPublish(operation);
+    ExecutorService dispatch = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> firstWorker = dispatch.submit(() -> test.first.advance(operation, 3_000));
+      assertThat(provider.applied.await(10, TimeUnit.SECONDS)).isTrue();
+      String leaseSql = "select lease_until from t_flink_managed_operation where id=?";
+      long initialLease = test.sql.queryForObject(leaseSql, Long.class, operation);
+      long waitUntil = initialLease + 20;
+      while (System.currentTimeMillis() < waitUntil) {
+        Thread.sleep(50);
+      }
+      assertThat(test.sql.queryForObject(leaseSql, Long.class, operation)).isGreaterThan(waitUntil);
+      test.second.advance(operation);
+      assertThat(test.status(operation)).isEqualTo("EXECUTING");
+
+      provider.allowAck.countDown();
+      firstWorker.get(10, TimeUnit.SECONDS);
+      assertThat(test.status(operation)).isEqualTo("WAITING_PROVIDER");
+      test.makeDue(operation);
+      test.second.advance(operation);
+      assertThat(test.status(operation)).isEqualTo("SUCCEEDED");
+      assertThat(provider.publishes).hasValue(1);
+      assertThat(test.sql.queryForObject(leaseSql, Long.class, operation)).isNull();
+    } finally {
+      provider.allowAck.countDown();
+      dispatch.shutdownNow();
+      test.first.stopRenewals();
+      test.second.stopRenewals();
+    }
+  }
+
+  @Test
   void unknownPublishKeepsFenceAndSameKey() {
     RecordingProvider provider = new RecordingProvider(false, false);
     Fixture test = new Fixture(provider);
