@@ -192,6 +192,90 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void confirmedStartupFailureKeepsRunEvidenceAndShowsFailedStep() {
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation observe(Context context, OperationStep step, Observation ack) {
+            Observation result = super.observe(context, step, ack);
+            if (step.getAction() == Action.START) {
+              result.setRunState("FAILED");
+            }
+            return result;
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    String release = test.jobField("active_release_id");
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    Command start = new Command();
+    start.setExpectedReleaseId(release);
+    start.setRestore(restore);
+    String operation = test.enqueue(CommandType.START, "failed-start", start);
+    test.first.advance(operation);
+    test.makeDue(operation);
+    test.first.advance(operation);
+
+    assertThat(test.status(operation)).isEqualTo("FAILED");
+    assertThat(test.jobField("active_release_id")).isEqualTo(release);
+    assertThat(test.jobField("pending_operation_id")).isNull();
+    assertThat(
+            test.sql.queryForMap(
+                "select state,error_code,request_id from t_flink_managed_operation_step "
+                    + "where operation_id=? and action='START'",
+                operation))
+        .containsEntry("state", "FAILED")
+        .containsEntry("error_code", "RUNTIME_FAILED")
+        .containsEntry("request_id", "mock-" + operation);
+    assertThat(
+            test.sql.queryForMap(
+                "select run_state,provider_instance_id,release_id from t_flink_managed_run "
+                    + "where id=?",
+                test.jobField("current_run_id")))
+        .containsEntry("run_state", "FAILED")
+        .containsEntry("provider_instance_id", "instance-" + operation)
+        .containsEntry("release_id", release);
+  }
+
+  @Test
+  void rejectedPublishKeepsPreviousReleaseActive() {
+    AtomicInteger publications = new AtomicInteger();
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation dispatch(Context context, OperationStep step) {
+            if (step.getAction() == Action.PUBLISH && publications.incrementAndGet() > 1) {
+              return Observation.outcome(Outcome.REJECTED, "DRAFT_REJECTED");
+            }
+            return super.dispatch(context, step);
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    String release = test.jobField("active_release_id");
+    Command update = test.command();
+    update.setExpectedReleaseId(release);
+    String operation = test.publish("rejected-publish", update);
+    for (int transition = 0; transition < 4; transition++) {
+      test.makeDue(operation);
+      test.first.advance(operation);
+    }
+    assertThat(test.status(operation)).isEqualTo("FAILED");
+    assertThat(test.jobField("active_release_id")).isEqualTo(release);
+    assertThat(publications).hasValue(2);
+    assertThat(
+            test.sql.queryForMap(
+                "select state,error_code from t_flink_managed_operation_step "
+                    + "where operation_id=? and action='PUBLISH'",
+                operation))
+        .containsEntry("state", "FAILED")
+        .containsEntry("error_code", "DRAFT_REJECTED");
+    assertThat(test.sql.queryForObject("select count(*) from t_flink_managed_run", Integer.class))
+        .isZero();
+  }
+
+  @Test
   void failedRestoreKeepsOriginalRunStopped() {
     AtomicInteger restoreRequests = new AtomicInteger();
     MockManagedFlinkProvider provider =

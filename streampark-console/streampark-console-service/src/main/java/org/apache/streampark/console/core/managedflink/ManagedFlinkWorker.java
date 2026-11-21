@@ -371,10 +371,16 @@ class ManagedFlinkWorker {
       defer(step.getOperationId());
       return;
     }
-    updateAttempt(step, index, evidence, "CONFIRMED");
-    if (step.getAction() == Action.START && !"RUNNING".equals(evidence.getRunState())) {
+    if (step.getAction() == Action.START && "FAILED".equals(evidence.getRunState())) {
+      if (evidence.getCode() == null) {
+        evidence.setCode("RUNTIME_FAILED");
+      }
+      updateAttempt(step, index, evidence, "FAILED");
       finish(op, "FAILED");
-    } else if (index + 1 == step.getCommand().getActions().size()) {
+      return;
+    }
+    updateAttempt(step, index, evidence, "CONFIRMED");
+    if (index + 1 == step.getCommand().getActions().size()) {
       finish(op, "SUCCEEDED");
     } else {
       store
