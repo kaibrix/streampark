@@ -160,3 +160,9 @@ CREATE INDEX IF NOT EXISTS idx_managed_operation_due ON t_flink_managed_operatio
 CREATE INDEX IF NOT EXISTS idx_managed_job_team ON t_flink_managed_job (team_id, environment_id);
 CREATE INDEX IF NOT EXISTS idx_managed_run_history ON t_flink_managed_run (app_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_managed_snapshot_history ON t_flink_managed_snapshot (app_id, created_at);
+
+-- Managed Flink logs require a separately assignable permission.
+INSERT INTO public.t_menu
+  (menu_id, parent_id, menu_name, perms, type, display, create_time, modify_time)
+SELECT 120219, 120200, 'managed app logs', 'app:log', 1, true, now(), now()
+WHERE NOT EXISTS (SELECT 1 FROM public.t_menu WHERE menu_id = 120219 OR perms = 'app:log');

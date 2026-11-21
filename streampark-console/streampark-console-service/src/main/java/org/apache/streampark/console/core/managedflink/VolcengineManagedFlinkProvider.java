@@ -20,6 +20,7 @@ package org.apache.streampark.console.core.managedflink;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQuery;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
@@ -31,6 +32,7 @@ import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.volcengine.ApiException;
 import com.volcengine.sign.Credentials;
 import org.springframework.stereotype.Component;
 
@@ -38,6 +40,7 @@ import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -80,14 +83,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           "ARTIFACT_UPLOAD",
           "ARTIFACT_RUNTIME_READ",
           "LOG_SEARCH",
+          "LOG_LEVEL_FILTER",
           "METRICS");
 
   private final VolcengineProfileBinding binding;
   private final VolcengineArtifactStore artifacts;
+  private final VolcengineTlsLogs tlsLogs;
 
-  VolcengineManagedFlinkProvider(VolcengineProfileBinding binding) {
+  VolcengineManagedFlinkProvider(VolcengineProfileBinding binding, VolcengineTlsLogs tlsLogs) {
     this.binding = binding;
     this.artifacts = new VolcengineArtifactStore(binding);
+    this.tlsLogs = tlsLogs;
   }
 
   @Override
@@ -148,10 +154,18 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     if (binding.permitsMetricReads(context)) {
       report.put("METRICS", "AVAILABLE");
     }
-    if (context.getTarget().getTlsTopic() == null || context.getTarget().getTlsTopic().isEmpty()) {
-      report.replace("LOG_SEARCH", "UNVERIFIED", "NEEDS_CONFIGURATION");
+    report.replace("LOG_SEARCH", "UNVERIFIED", logCapability(context));
+    if ("AVAILABLE".equals(report.get("LOG_SEARCH")) && tlsLogs.permitsLevelFilter()) {
+      report.put("LOG_LEVEL_FILTER", "AVAILABLE");
     }
     return report;
+  }
+
+  private String logCapability(Context context) {
+    if (!context.isServerCredential() || !binding.permits(context)) {
+      return "UNVERIFIED";
+    }
+    return tlsLogs.configured(context) ? "AVAILABLE" : "NEEDS_CONFIGURATION";
   }
 
   @Override
@@ -261,9 +275,6 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   @Override
   public Map<String, Object> diagnostics(
       Context context, String jobId, String instanceId, String source) {
-    if ("logs".equals(source)) {
-      return Collections.singletonMap("status", capabilities(context).get("LOG_SEARCH"));
-    }
     if (!"metrics".equals(source) || !binding.permitsMetricReads(context)) {
       return ManagedFlinkProvider.super.diagnostics(context, jobId, instanceId, source);
     }
@@ -275,6 +286,28 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       return run == null ? VolcengineMonitor.status("STALE") : VolcengineMonitor.read(api, run);
     } catch (IOException | RuntimeException e) {
       return VolcengineMonitor.status("STALE");
+    }
+  }
+
+  @Override
+  public Map<String, Object> logs(
+      Context context, String jobId, String instanceId, LogQuery query) {
+    String capability = logCapability(context);
+    if (!"AVAILABLE".equals(capability)) {
+      return VolcengineTlsLogs.status(capability);
+    }
+    try {
+      Credentials credentials = binding.credentials(context);
+      VolcengineOpenApi api = new VolcengineOpenApi(context.getRegion(), credentials);
+      Target target = context.getTarget();
+      JsonObject published = application(api, target, jobId);
+      JsonObject run = published == null ? null : instance(api, target, jobId, instanceId);
+      return run == null
+          ? VolcengineTlsLogs.status("STALE")
+          : tlsLogs.read(
+              new VolcengineTlsApi(target.getTlsRegion(), credentials), context, jobId, run, query);
+    } catch (ApiException | IOException | DateTimeParseException e) {
+      return VolcengineTlsLogs.status("STALE");
     }
   }
 

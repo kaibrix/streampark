@@ -48,7 +48,7 @@ final class VolcengineOpenApi {
   private static final MediaType JSON = MediaType.parse("application/json; charset=UTF-8");
   private static final long MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-  private static final OkHttpClient TRANSPORT = transport();
+  static final OkHttpClient TRANSPORT = transport();
   private final String region;
   private final Credentials credentials;
 

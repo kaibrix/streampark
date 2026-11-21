@@ -67,6 +67,16 @@
   const capabilities = ref<Capabilities>({});
   const releases = ref<Release[]>([]);
   const runs = ref<Run[]>([]);
+  const logRun = ref<string>();
+  const logFilters = reactive({ component: '', level: '', keyword: '', from: '', until: '' });
+  const logs = ref<{
+    status: string;
+    requestIdSuffix?: string;
+    nextCursor?: string;
+    from?: number;
+    until?: number;
+    rows?: { timestamp: number; component?: string; level?: string; message: string }[];
+  }>();
   const metricRun = ref<string>();
   const metrics = ref<{
     status: string;
@@ -270,6 +280,24 @@
     metricRun.value = id;
     void action(async () => {
       metrics.value = await managedGet(base + `/runs/${id}/metrics`);
+    });
+  }
+
+  function readLogs(cursor?: string) {
+    const id = logRun.value || job.value?.currentRunId;
+    if (!id) return;
+    logRun.value = id;
+    const from = logFilters.from ? new Date(logFilters.from).getTime() : undefined;
+    const until = logFilters.until ? new Date(logFilters.until).getTime() : undefined;
+    void action(async () => {
+      logs.value = await managedGet(base + `/runs/${id}/logs`, {
+        component: logFilters.component || undefined,
+        level: logFilters.level || undefined,
+        keyword: logFilters.keyword || undefined,
+        from,
+        until,
+        cursor,
+      });
     });
   }
 
@@ -498,6 +526,95 @@
         </TabPane>
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <p>{{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}</p>
+          <div v-if="can('LOG_SEARCH') && runs.length" v-auth="'app:log'" class="mb-6">
+            <Space wrap>
+              <Select
+                :value="logRun || job.currentRunId"
+                :aria-label="t('managedFlink.logInstance')"
+                :disabled="busy"
+                :placeholder="t('managedFlink.logInstance')"
+                style="min-width: 220px"
+                :options="
+                  runs.map((entry) => ({
+                    value: entry.id,
+                    label: `${entry.provider_instance_id} · ${entry.run_state}`,
+                  }))
+                "
+                @change="
+                  (id) => {
+                    logRun = String(id);
+                    logs = undefined;
+                  }
+                "
+              />
+              <Input
+                v-model:value="logFilters.component"
+                :aria-label="t('managedFlink.logComponent')"
+                :placeholder="t('managedFlink.logComponent')"
+                :disabled="busy"
+                :maxlength="64"
+                @input="logs = undefined"
+              />
+              <Input
+                v-if="can('LOG_LEVEL_FILTER')"
+                v-model:value="logFilters.level"
+                :aria-label="t('managedFlink.logLevel')"
+                :placeholder="t('managedFlink.logLevel')"
+                :disabled="busy"
+                :maxlength="16"
+                @input="logs = undefined"
+              />
+              <Input
+                v-model:value="logFilters.keyword"
+                :aria-label="t('managedFlink.logKeyword')"
+                :placeholder="t('managedFlink.logKeyword')"
+                :disabled="busy"
+                :maxlength="256"
+                @input="logs = undefined"
+              />
+              <label
+                >{{ t('managedFlink.logFrom') }}
+                <Input
+                  v-model:value="logFilters.from"
+                  type="datetime-local"
+                  :disabled="busy"
+                  @input="logs = undefined"
+                />
+              </label>
+              <label
+                >{{ t('managedFlink.logUntil') }}
+                <Input
+                  v-model:value="logFilters.until"
+                  type="datetime-local"
+                  :disabled="busy"
+                  @input="logs = undefined"
+                />
+              </label>
+              <Button :loading="busy" :disabled="!(logRun || job.currentRunId)" @click="readLogs()">
+                {{ t('managedFlink.loadLogs') }}
+              </Button>
+            </Space>
+            <div v-if="logs" class="mt-4">
+              <p>
+                {{ t('managedFlink.logStatus.' + logs.status) }}
+                <span v-if="logs.requestIdSuffix"> · RequestId …{{ logs.requestIdSuffix }}</span>
+              </p>
+              <p v-if="logs.from !== undefined && logs.until !== undefined">
+                {{ new Date(logs.from).toLocaleString() }} →
+                {{ new Date(logs.until).toLocaleString() }}
+              </p>
+              <ul>
+                <li v-for="(entry, index) in logs.rows" :key="index" class="mb-2">
+                  {{ new Date(entry.timestamp).toLocaleString() }} {{ entry.component }}
+                  {{ entry.level }}
+                  <pre class="whitespace-pre-wrap break-words">{{ entry.message }}</pre>
+                </li>
+              </ul>
+              <Button v-if="logs.nextCursor" :loading="busy" @click="readLogs(logs.nextCursor)">
+                {{ t('managedFlink.nextLogPage') }}
+              </Button>
+            </div>
+          </div>
           <p>{{ t('managedFlink.metrics') }} · {{ capabilities.METRICS || 'UNVERIFIED' }}</p>
           <template v-if="can('METRICS') && runs.length">
             <Space wrap>

@@ -100,6 +100,7 @@ insert into `t_menu` values (120215, 120200, 'copy', null, null, 'app:copy', nul
 insert into `t_menu` values (120216, 120200, 'view', null, null, 'app:view', null, '1', 1, null, now(), now());
 insert into `t_menu` values (120217, 120200, 'savepoint trigger', null, null, 'savepoint:trigger', null, '1', 1, null, now(), now());
 insert into `t_menu` values (120218, 120200, 'sql delete', null, null, 'sql:delete', null, '1', 1, null, now(), now());
+insert into `t_menu` values (120219, 120200, 'managed app logs', null, null, 'app:log', null, '1', 1, null, now(), now());
 insert into `t_menu` values (120301, 120300, 'add', NULL, NULL, 'variable:add', NULL, '1', 1, NULL, now(), now());
 insert into `t_menu` values (120302, 120300, 'update', NULL, NULL, 'variable:update', NULL, '1', 1, NULL, now(), now());
 insert into `t_menu` values (120303, 120300, 'delete', NULL, NULL, 'variable:delete', NULL, '1', 1, NULL, now(), now());

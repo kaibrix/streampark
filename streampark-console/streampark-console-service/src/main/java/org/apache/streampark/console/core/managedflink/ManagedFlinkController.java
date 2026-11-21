@@ -27,6 +27,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import lombok.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -261,7 +262,24 @@ public class ManagedFlinkController {
         store.require("select * from t_flink_managed_run where app_id=? and id=?", appId, id));
   }
 
-  @GetMapping("/apps/{appId}/runs/{id}/{source:events|logs|metrics}")
+  @GetMapping("/apps/{appId}/runs/{id}/logs")
+  ResponseEntity<Body<Map<String, Object>>> logs(
+      @RequestParam long teamId,
+      @PathVariable long appId,
+      @PathVariable String id,
+      @RequestParam(required = false) Long from,
+      @RequestParam(required = false) Long until,
+      @RequestParam(required = false) String component,
+      @RequestParam(required = false) String level,
+      @RequestParam(required = false) String keyword,
+      @RequestParam(required = false) String cursor) {
+    requireRead(teamId, appId);
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .body(ok(jobs.logs(teamId, appId, id, from, until, component, level, keyword, cursor)));
+  }
+
+  @GetMapping("/apps/{appId}/runs/{id}/{source:events|metrics}")
   Body<Map<String, Object>> diagnostics(
       @RequestParam long teamId,
       @PathVariable long appId,

@@ -175,3 +175,9 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_snapshot (
   FOREIGN KEY (operation_id) REFERENCES t_flink_managed_operation (id),
   KEY idx_managed_snapshot_history (app_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+-- Managed Flink logs require a separately assignable permission.
+INSERT INTO t_menu
+  (menu_id, parent_id, menu_name, perms, type, display, create_time, modify_time)
+SELECT 120219, 120200, 'managed app logs', 'app:log', 1, 1, now(), now()
+WHERE NOT EXISTS (SELECT 1 FROM t_menu WHERE menu_id = 120219 OR perms = 'app:log');

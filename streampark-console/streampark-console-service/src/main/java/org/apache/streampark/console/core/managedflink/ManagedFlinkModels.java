@@ -120,6 +120,17 @@ public final class ManagedFlinkModels {
     private String tlsRegion;
   }
 
+  @Value
+  public static class LogQuery {
+    long actor;
+    Long from;
+    Long until;
+    String component;
+    String level;
+    String keyword;
+    String cursor;
+  }
+
   @Data
   public static class JobInput {
     private String name;

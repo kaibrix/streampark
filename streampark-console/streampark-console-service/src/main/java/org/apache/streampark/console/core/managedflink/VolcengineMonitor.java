@@ -170,7 +170,7 @@ final class VolcengineMonitor {
     return value != null && value.isJsonArray() ? value.getAsJsonArray() : new JsonArray();
   }
 
-  private static long epoch(String time) {
+  static long epoch(String time) {
     return LocalDateTime.parse(time, CLOUD_TIME).atZone(BEIJING).toEpochSecond();
   }
 }

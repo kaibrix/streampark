@@ -113,3 +113,24 @@ rechecks it in Volcengine before dispatching the restore.
 `job instance logs`, and `savepoint list` provide independent evidence
 for these checks. Use the same test profile, project, and region for every
 command. Run one test instance at a time when the pool has limited capacity.
+
+## TLS diagnostics
+
+Configure the exact test TLS region and Topic ID in the Console environment.
+Verify that the Topic stores both the Flink instance `ApplicationId` and
+`DeploymentId` and gives each a case-sensitive text index without delimiters.
+Use the same case-sensitive index for component and optional level filters.
+Grant the server profile read access to DescribeTopic, DescribeIndex and
+SearchLogs for that Topic. Grant `app:log` separately to Console roles that
+need to query it.
+
+Set `streampark.managed-flink.volcengine.logs-region`, `logs-topic`,
+`logs-instance-field`, `logs-deployment-field`, `logs-component-field`,
+and `logs-message-field` to the verified values. An optional
+`logs-level-field` enables the level filter. Enable `logs-enabled` after
+verifying the scope, archive schema and access with the target deployment.
+
+Select a historical instance in Diagnostics and search for a fixture
+marker or RequestId. Check the time window, component and level filters,
+the request ID suffix and pagination. Use two instances of the same test
+job to confirm each results page contains only the selected instance.

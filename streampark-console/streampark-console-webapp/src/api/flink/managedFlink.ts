@@ -90,8 +90,14 @@ export type Capabilities = Record<string, string>;
 const base = '/flink/managed';
 const quiet = { errorMessageMode: 'none' as const, formatDate: false };
 
-export function managedGet<T>(path: string) {
-  return defHttp.get<T>({ url: base + path, params: { teamId: getUserTeamId() } }, quiet);
+export function managedGet<T>(
+  path: string,
+  params: Record<string, number | string | undefined> = {},
+) {
+  return defHttp.get<T>(
+    { url: base + path, params: { ...params, teamId: getUserTeamId() } },
+    quiet,
+  );
 }
 
 export function managedPost<T>(path: string, data: Record<string, unknown>, key?: string) {

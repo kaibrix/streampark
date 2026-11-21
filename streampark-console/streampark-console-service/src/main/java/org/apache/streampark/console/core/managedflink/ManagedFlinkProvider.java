@@ -21,6 +21,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQuery;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
@@ -75,6 +76,11 @@ public interface ManagedFlinkProvider {
 
   default Map<String, Object> diagnostics(
       Context context, String jobId, String instanceId, String source) {
+    return Collections.singletonMap("status", "UNVERIFIED");
+  }
+
+  default Map<String, Object> logs(
+      Context context, String jobId, String instanceId, LogQuery query) {
     return Collections.singletonMap("status", "UNVERIFIED");
   }
 
