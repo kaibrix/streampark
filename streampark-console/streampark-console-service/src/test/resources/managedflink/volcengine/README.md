@@ -134,3 +134,19 @@ Select a historical instance in Diagnostics and search for a fixture
 marker or RequestId. Check the time window, component and level filters,
 the request ID suffix and pagination. Use two instances of the same test
 job to confirm each results page contains only the selected instance.
+
+## E05 startup failure
+
+Compile `E05StartupFailure.java` with `javac --release 8` and package it with
+`jar cfe` using the main class
+`org.apache.streampark.acceptance.E05StartupFailure`. This fixture needs no
+Flink compile dependency. Publish it as a dedicated JAR job and confirm the
+release exists with zero instances. Start once with `FROM_NEW`. The main
+class stops startup by throwing a fixed exception.
+
+Compare the JobManager marker `STREAMPARK_E05_INTENTIONAL_STARTUP_FAILURE`
+and the provider state for the acknowledged instance. The Console keeps the
+operation pending while the provider still reports `STARTING`. After the
+same instance is confirmed as `FAILED`, the START step reports
+`RUNTIME_FAILED` and retains its RequestId. The failed run remains linked to
+its published release.
