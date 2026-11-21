@@ -31,6 +31,7 @@
   } from 'ant-design-vue';
   import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
+  import { usePermission } from '/@/hooks/web/usePermission';
   import {
     managedGet,
     managedPatch,
@@ -54,6 +55,7 @@
 
   const props = defineProps<{ appId: string; name?: string }>();
   const { t } = useI18n();
+  const { hasPermission } = usePermission();
   const base = `/apps/${props.appId}`;
   const job = ref<Job>();
   const spec = ref<Spec>();
@@ -526,7 +528,7 @@
         </TabPane>
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <p>{{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}</p>
-          <div v-if="can('LOG_SEARCH') && runs.length" v-auth="'app:log'" class="mb-6">
+          <div v-if="can('LOG_SEARCH') && runs.length && hasPermission('app:log')" class="mb-6">
             <Space wrap>
               <Select
                 :value="logRun || job.currentRunId"

@@ -53,11 +53,13 @@ final class VolcengineTlsLogs {
   private static final int PAGE_SIZE = 100;
   private static final Pattern SENSITIVE_LINE =
       Pattern.compile(
-          "(?is)(?:\\b(?:authorization|credential|access[._ -]?key(?:[._ -]?id)?|secret[._ -]?key|"
-              + "session[._ -]?token|token|password|signature|x-[a-z-]*(?:token|signature|credential)|"
+          "(?is)(?:\\b(?:authorization|credential|ak|sk|access[._ -]?key(?:[._ -]?id)?|"
+              + "secret(?:[._ -]?access)?[._ -]?key|api[._ -]?key|password|signature|"
+              + "(?:security|session)?[._ -]?token|x-[a-z-]*(?:token|signature|credential)|"
               + "program[._ -]?args|main[._ -]?args|argv|args|sql[._ -]?(?:text|statement)?)\\b"
               + "[\\\"']?\\s*[:=]|\\b(?:bearer\\s+|select\\s+|insert\\s+into|"
               + "create\\s+(?:temporary\\s+)?table)\\b"
+              + "|--(?:password|token|access-key(?:-id)?|secret(?:-access)?-key|api-key)\\s+"
               + "|https?://[^\\s?#]+\\?[^\\s\"']+)");
   private final String region;
   private final String topic;

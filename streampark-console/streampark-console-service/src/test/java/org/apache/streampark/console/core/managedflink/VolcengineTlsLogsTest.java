@@ -196,6 +196,9 @@ class VolcengineTlsLogsTest {
         List.of(
             "Authorization: HMAC-SHA256 value",
             "{\"session_token\": \"example\"}",
+            "AK=example SK=value",
+            "{\"SecretAccessKey\": \"example\"}",
+            "entrypoint --password fixture",
             "https://fixture.invalid/object?X-Tos-Signature=value",
             "Execution failed for SELECT fixture FROM events",
             "mainArgs=--configuration example")) {
