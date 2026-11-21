@@ -33,7 +33,11 @@ import lombok.Getter;
 import lombok.Setter;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Date;
 import java.util.Map;
 
@@ -129,8 +133,7 @@ public class FlinkEnv implements Serializable {
   }
 
   public Map<String, String> convertFlinkYamlAsMap() {
-    String flinkYamlString = DeflaterUtils.unzipString(flinkConf);
-    return PropertiesUtils.loadFlinkConfYaml(flinkYamlString);
+    return PropertiesUtils.loadFlinkConfYaml(readFlinkYaml());
   }
 
   @JsonIgnore
@@ -142,7 +145,26 @@ public class FlinkEnv implements Serializable {
   }
 
   public void unzipFlinkConf() {
-    this.flinkConf = DeflaterUtils.unzipString(this.flinkConf);
+    this.flinkConf = readFlinkYaml();
+  }
+
+  private String readFlinkYaml() {
+    File config = new File(flinkConf);
+    if (!config.isAbsolute()) {
+      return DeflaterUtils.unzipString(flinkConf);
+    }
+
+    Path path = config.toPath().normalize();
+    Path configDir = new File(flinkHome, "conf").toPath().toAbsolutePath().normalize();
+    if (!path.equals(configDir.resolve(LEGACY_CONFIG_FILE))
+        && !path.equals(configDir.resolve(NEW_CONFIG_FILE))) {
+      throw new ApiAlertException("Unexpected Flink configuration path");
+    }
+    try {
+      return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+    } catch (IOException e) {
+      throw new ApiDetailException("Cannot read the Flink configuration file. ", e);
+    }
   }
 
   @JsonIgnore

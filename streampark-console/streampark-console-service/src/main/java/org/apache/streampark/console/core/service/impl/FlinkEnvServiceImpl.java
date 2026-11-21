@@ -17,8 +17,6 @@
 
 package org.apache.streampark.console.core.service.impl;
 
-import org.apache.streampark.common.util.DeflaterUtils;
-import org.apache.streampark.common.util.PropertiesUtils;
 import org.apache.streampark.console.base.domain.RestRequest;
 import org.apache.streampark.console.base.exception.ApiAlertException;
 import org.apache.streampark.console.base.mybatis.pager.MybatisPager;
@@ -173,9 +171,8 @@ public class FlinkEnvServiceImpl extends ServiceImpl<FlinkEnvMapper, FlinkEnv>
 
   @Override
   public Properties getFlinkConfig(FlinkEnv flinkEnv, Application application) {
-    String flinkYamlString = DeflaterUtils.unzipString(flinkEnv.getFlinkConf());
     Properties flinkConfig = new Properties();
-    Map<String, String> config = PropertiesUtils.loadFlinkConfYaml(flinkYamlString);
+    Map<String, String> config = flinkEnv.convertFlinkYamlAsMap();
     for (Map.Entry<String, String> entry : config.entrySet()) {
       String value = entry.getValue();
       if (StringUtils.isNotBlank(application.getJobName())) {
