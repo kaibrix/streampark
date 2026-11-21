@@ -181,6 +181,9 @@ public class ManagedFlinkJobs {
     Map<String, Object> job = job(team, app, false);
     Spec spec = candidate == null ? store.decode(text(job, "draft_spec"), Spec.class) : candidate;
     validate(spec, true);
+    Map<String, Object> environment = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> connection = catalog.connection(team, text(environment, "connection_id"));
+    validateProviderSpec(catalog.provider(text(connection, "provider")), spec);
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
       artifact(app, artifactId);
@@ -310,6 +313,7 @@ public class ManagedFlinkJobs {
       spec = store.decode(text(job, "draft_spec"), Spec.class);
     }
     validate(spec, true);
+    validateProviderSpec(provider, spec);
     capability(capabilities, "PUBLISH_" + spec.getType().name());
     if (spec.getUdfArtifactId() != null) {
       capability(capabilities, "PUBLISH_SQL_UDF");
@@ -658,6 +662,8 @@ public class ManagedFlinkJobs {
                     entry ->
                         entry.getKey() != null
                             && (allowed.contains(entry.getKey())
+                                || ("args.base64.enabled".equals(entry.getKey())
+                                    && spec.getType() == JobType.JAR)
                                 || entry
                                     .getKey()
                                     .matches(
@@ -678,11 +684,18 @@ public class ManagedFlinkJobs {
       case "jobmanager.memory.process.size":
       case "taskmanager.memory.process.size":
         return value.matches("(?i)[1-9][0-9]{0,8}\\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)");
+      case "args.base64.enabled":
+        return "true".equals(value) || "false".equals(value);
       case "execution.checkpointing.interval":
       case "execution.checkpointing.timeout":
         return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
       default:
         return true;
     }
+  }
+
+  private void validateProviderSpec(ManagedFlinkProvider provider, Spec spec) {
+    String issue = provider.specIssue(spec);
+    check(issue == null, HttpStatus.UNPROCESSABLE_ENTITY, issue);
   }
 }

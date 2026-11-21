@@ -86,8 +86,16 @@ class VolcengineExecutableTest {
     JsonObject draft = new JsonObject();
     draft.addProperty("JobType", "FLINK_STREAMING_JAR");
     draft.addProperty("EngineVersion", "FLINK_VERSION_1_17");
+    assertThat(VolcengineExecutable.hasSupportedArgs(step.getCommand().getSpec())).isFalse();
+    step.getCommand().getSpec().getConfiguration().put("args.base64.enabled", "true");
+    assertThat(VolcengineExecutable.hasSupportedArgs(step.getCommand().getSpec())).isTrue();
     VolcengineExecutable.writeDraft(draft, step);
-    assertThat(draft.get("Args").getAsString()).isEqualTo("\"alpha beta\" 中文 --limit=7");
+    assertThat(
+            new String(
+                    java.util.Base64.getDecoder().decode(draft.get("Args").getAsString()),
+                    java.nio.charset.StandardCharsets.UTF_8)
+                .split("\u0000", -1))
+        .containsExactly("alpha beta", "中文", "--limit=7");
     assertThat(VolcengineExecutable.matches(draft, step, true)).isTrue();
 
     JsonObject published = draft.deepCopy();

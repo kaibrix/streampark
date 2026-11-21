@@ -44,6 +44,9 @@ final class VolcengineProfileBinding {
   private final List<String> engines;
   private final boolean sqlWrites;
   private final boolean snapshots;
+  private final boolean artifacts;
+  private final String artifactBucket;
+  private final String artifactPrefix;
 
   VolcengineProfileBinding(
       @Value("${streampark.managed-flink.volcengine.profile:}") String profile,
@@ -57,7 +60,11 @@ final class VolcengineProfileBinding {
       @Value("${streampark.managed-flink.volcengine.sql-lifecycle-enabled:false}")
           boolean sqlWrites,
       @Value("${streampark.managed-flink.volcengine.snapshot-lifecycle-enabled:false}")
-          boolean snapshots) {
+          boolean snapshots,
+      @Value("${streampark.managed-flink.volcengine.artifact-lifecycle-enabled:false}")
+          boolean artifacts,
+      @Value("${streampark.managed-flink.volcengine.artifact-bucket:}") String artifactBucket,
+      @Value("${streampark.managed-flink.volcengine.artifact-prefix:}") String artifactPrefix) {
     provider =
         profile.isEmpty() ? null : new CredentialProvider(new CLIConfigCredentialProvider(profile));
     this.team = team;
@@ -69,6 +76,9 @@ final class VolcengineProfileBinding {
     this.engines = Arrays.asList(engine.trim().split("\\s*,\\s*"));
     this.sqlWrites = sqlWrites;
     this.snapshots = snapshots;
+    this.artifacts = artifacts;
+    this.artifactBucket = artifactBucket;
+    this.artifactPrefix = artifactPrefix;
   }
 
   boolean permitsConnection(long team, String account) {
@@ -104,6 +114,15 @@ final class VolcengineProfileBinding {
 
   boolean permitsSnapshots(Context context) {
     return snapshots && permitsSqlWrites(context);
+  }
+
+  boolean permitsArtifacts(Context context) {
+    return artifacts
+        && permitsSqlWrites(context)
+        && artifactBucket.matches("[a-z0-9][a-z0-9-]{1,61}[a-z0-9]")
+        && artifactPrefix.matches("[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*")
+        && artifactBucket.equals(context.getTarget().getArtifactBucket())
+        && artifactPrefix.equals(context.getTarget().getArtifactPrefix());
   }
 
   synchronized Credentials credentials(Context context) throws ApiException {

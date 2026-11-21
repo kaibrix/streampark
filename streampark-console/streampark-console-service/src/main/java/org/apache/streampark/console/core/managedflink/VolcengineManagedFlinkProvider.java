@@ -83,9 +83,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           "METRICS");
 
   private final VolcengineProfileBinding binding;
+  private final VolcengineArtifactStore artifacts;
 
   VolcengineManagedFlinkProvider(VolcengineProfileBinding binding) {
     this.binding = binding;
+    this.artifacts = new VolcengineArtifactStore(binding);
   }
 
   @Override
@@ -96,6 +98,18 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   @Override
   public boolean permitsServerCredential(long team, String account) {
     return binding.permitsConnection(team, account);
+  }
+
+  @Override
+  public String specIssue(ManagedFlinkModels.Spec spec) {
+    if (!VolcengineExecutable.supportedConfiguration(spec)) {
+      return "Flink configuration exceeds the configured Volcengine runtime settings";
+    }
+    if (spec.getType() == JobType.JAR && !VolcengineExecutable.hasSupportedArgs(spec)) {
+      return "Volcengine splits text arguments at whitespace. Use args.base64.enabled=true "
+          + "with a main class that decodes the Base64 argument vector";
+    }
+    return null;
   }
 
   @Override
@@ -113,6 +127,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       report.put("PUBLISH_SQL", "AVAILABLE");
       report.put("START", "AVAILABLE");
       report.put("STOP", "AVAILABLE");
+      if (binding.permitsArtifacts(context)) {
+        report.put("PUBLISH_SQL_UDF", "AVAILABLE");
+        report.put("PUBLISH_JAR", "AVAILABLE");
+        report.put("ARTIFACT_UPLOAD", "AVAILABLE");
+        report.put("ARTIFACT_RUNTIME_READ", "AVAILABLE");
+      }
       if (binding.permitsSnapshots(context)) {
         report.put("SNAPSHOT", "AVAILABLE");
         report.put("SNAPSHOT_THEN_STOP", "AVAILABLE");
@@ -167,9 +187,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       query.put("Type", "JOB");
       Reply directories = api.call("ListGWSDirectory", GWS_VERSION, query, new JsonObject());
       boolean directoryFound =
-          directories.ok()
-              && rows(directories.result).stream()
-                  .anyMatch(dir -> same(dir, "Id", target.getDirectoryId()));
+          directories.ok() && includesDirectory(directories.result, target.getDirectoryId());
       report.put("DIRECTORY_READ", directoryFound ? "AVAILABLE" : "NEEDS_CONFIGURATION");
       Reply jobs = listJobs(api, target, null);
       report.put("PROJECT_JOB_READ", jobs.ok() ? "AVAILABLE" : "NEEDS_CONFIGURATION");
@@ -241,6 +259,10 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       }
       Target target = context.getTarget();
       switch (step.getAction()) {
+        case STAGE_ARTIFACT:
+          return binding.permitsArtifacts(context)
+              ? artifacts.stage(context, step, true)
+              : rejected("CAPABILITY_UNVERIFIED");
         case CREATE_DRAFT:
           if (!supportedSpec(context, step)) {
             return rejected("UNVERIFIED_SPEC");
@@ -352,6 +374,10 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       Target target = context.getTarget();
       Observation observation = Observation.outcome(Outcome.CONFIRMED, null);
       switch (step.getAction()) {
+        case STAGE_ARTIFACT:
+          return binding.permitsArtifacts(context)
+              ? artifacts.stage(context, step, false)
+              : awaiting();
         case CREATE_DRAFT:
           String draftId = previous == null ? null : previous.getDraftId();
           JsonObject matchedDraft = draft(api, target, draftId);
@@ -673,10 +699,31 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   private boolean supportedSpec(Context context, OperationStep step) {
-    return step.getCommand().getSpec().getType() == JobType.SQL
-        && step.getCommand().getSpec().getUdfArtifactId() == null
-        && VolcengineExecutable.supportedConfiguration(step.getCommand().getSpec())
-        && step.getCommand().getReleaseMarker() != null;
+    ManagedFlinkModels.Spec spec = step.getCommand().getSpec();
+    if (step.getCommand().getReleaseMarker() == null
+        || !VolcengineExecutable.supportedConfiguration(spec)) {
+      return false;
+    }
+    if (spec.getType() == JobType.SQL && spec.getUdfArtifactId() == null) {
+      return true;
+    }
+    if (!binding.permitsArtifacts(context) || !VolcengineExecutable.hasSupportedArgs(spec)) {
+      return false;
+    }
+    String prefix =
+        "tos://"
+            + context.getTarget().getArtifactBucket()
+            + "/"
+            + context.getTarget().getArtifactPrefix()
+            + "/"
+            + context.getTeamId()
+            + "/"
+            + step.getAppId()
+            + "/";
+    String artifact = VolcengineExecutable.artifact(step);
+    return artifact != null
+        && artifact.startsWith(prefix)
+        && artifact.substring(prefix.length()).matches("[a-f0-9]{64}\\.jar");
   }
 
   private boolean same(JsonObject record, String field, String expected) {
@@ -731,6 +778,16 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       }
     }
     return rows;
+  }
+
+  private boolean includesDirectory(JsonElement nodes, String directoryId) {
+    for (JsonObject directory : rows(nodes)) {
+      if (same(directory, "Id", directoryId)
+          || includesDirectory(directory.get("ChildDirectoryDtoList"), directoryId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private long safeNumber(String value) {

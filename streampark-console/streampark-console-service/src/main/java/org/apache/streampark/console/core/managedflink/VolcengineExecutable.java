@@ -26,18 +26,20 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
-import java.util.stream.Collectors;
 
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.text;
 
 final class VolcengineExecutable {
   private static final String RELEASE_OPTION = "pipeline.name";
+  private static final String BASE64_ARGS = "args.base64.enabled";
 
   static String providerType(JobType type) {
     return type == JobType.JAR ? "FLINK_STREAMING_JAR" : "FLINK_STREAMING_SQL";
@@ -71,10 +73,19 @@ final class VolcengineExecutable {
         : step.getStagedArtifact();
   }
 
-  static String jarArgs(List<String> args) {
-    return args.stream()
-        .map(value -> value.matches("[^\\s'\"]+") ? value : "\"" + value + "\"")
-        .collect(Collectors.joining(" "));
+  static String jarArgs(Spec spec) {
+    if (spec.getArgs().isEmpty()) {
+      return "";
+    }
+    if (base64Arguments(spec)) {
+      String payload = String.join("\u0000", spec.getArgs());
+      return Base64.getEncoder().encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+    }
+    return String.join(" ", spec.getArgs());
+  }
+
+  private static boolean base64Arguments(Spec spec) {
+    return "true".equals(spec.getConfiguration().get(BASE64_ARGS));
   }
 
   static boolean supportedConfiguration(Spec spec) {
@@ -90,17 +101,16 @@ final class VolcengineExecutable {
               if (key.startsWith("execution.checkpointing.")) {
                 return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
               }
-              return key.startsWith("containerized.");
+              return key.startsWith("containerized.")
+                  || (BASE64_ARGS.equals(key) && spec.getType() == JobType.JAR);
             });
   }
 
   static boolean hasSupportedArgs(Spec spec) {
-    return spec.getArgs().stream()
-        .noneMatch(
-            value ->
-                value.indexOf('"') >= 0
-                    || value.indexOf('\\') >= 0
-                    || value.codePoints().anyMatch(Character::isISOControl));
+    return base64Arguments(spec)
+        || spec.getArgs().stream()
+            .allMatch(
+                value -> !value.isEmpty() && value.codePoints().noneMatch(Character::isWhitespace));
   }
 
   static void writeDraft(JsonObject draft, OperationStep step) {
@@ -123,7 +133,7 @@ final class VolcengineExecutable {
     } else {
       draft.addProperty("Jar", artifact);
       draft.addProperty("MainClass", spec.getMainClass());
-      draft.addProperty("Args", jarArgs(spec.getArgs()));
+      draft.addProperty("Args", jarArgs(spec));
       draft.add("MainArgs", new JsonObject());
     }
   }
@@ -155,7 +165,7 @@ final class VolcengineExecutable {
       return artifact != null
           && artifact.equals(text(remote, "Jar"))
           && Objects.equals(spec.getMainClass(), text(remote, "MainClass"))
-          && jarArgs(spec.getArgs()).equals(Objects.toString(text(remote, "Args"), ""))
+          && jarArgs(spec).equals(Objects.toString(text(remote, "Args"), ""))
           && matchesDependency(remote.get("Dependency"), Collections.emptyList());
     }
     return Objects.equals(spec.getSql(), text(remote, "SqlText"))

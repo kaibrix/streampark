@@ -25,20 +25,33 @@ import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 
 public class StatefulSmoke {
   public static void main(String[] args) throws Exception {
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.setParallelism(1);
     env.enableCheckpointing(2000);
-    String label = "jar-v1 " + Arrays.toString(args)
+    String label = "jar-v1 " + Arrays.toString(programArgs(args))
         + " jm=" + System.getenv("STREAM_PARK_ACCEPTANCE_JM");
     env.addSource(new Sequence()).uid("streampark-smoke-source")
         .map(value -> label + " tm=" + System.getenv("STREAM_PARK_ACCEPTANCE_TM")
             + " offset=" + value).uid("streampark-smoke-marker")
         .print().uid("streampark-smoke-print");
     env.execute("streampark-managed-flink-smoke");
+  }
+
+  private static String[] programArgs(String[] args) {
+    if (!Boolean.parseBoolean(System.getenv("STREAM_PARK_ACCEPTANCE_ARGS_BASE64"))) {
+      return args;
+    }
+    if (args.length != 1) {
+      throw new IllegalArgumentException("Expected one encoded argument vector");
+    }
+    return new String(Base64.getDecoder().decode(args[0]), StandardCharsets.UTF_8)
+        .split("\u0000", -1);
   }
 
   private static class Sequence extends RichSourceFunction<Long>

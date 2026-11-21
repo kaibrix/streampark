@@ -23,6 +23,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Contex
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,6 +46,10 @@ public interface ManagedFlinkProvider {
 
   default Map<String, String> probe(Context context) {
     return capabilities(context);
+  }
+
+  default String specIssue(Spec spec) {
+    return null;
   }
 
   default List<Action> publishSteps(JobType type, boolean hasDraft) {
