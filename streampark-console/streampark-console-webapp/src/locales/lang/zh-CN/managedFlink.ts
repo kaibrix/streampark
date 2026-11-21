@@ -16,6 +16,8 @@
  */
 
 export default {
+  configuration: 'Flink 配置（每行一条 key=value）',
+  invalidConfiguration: '请使用 key=value 格式，每个配置键只能填写一次。',
   title: '托管 Flink',
   create: '新建托管 Flink 作业',
   failed: '托管 Flink 请求失败',

@@ -16,6 +16,8 @@
  */
 
 export default {
+  configuration: 'Flink configuration (one key=value per line)',
+  invalidConfiguration: 'Enter each configuration key once in key=value format.',
   title: 'Managed Flink',
   create: 'Create managed Flink job',
   failed: 'Managed Flink request failed',

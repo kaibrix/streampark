@@ -58,9 +58,11 @@
   const job = ref<Job>();
   const spec = ref<Spec>();
   const argText = ref('');
+  const configurationText = ref('');
   const buildSource = reactive({ projectId: '', module: '', jar: '' });
   const editingRevision = ref<string>();
   const savedSpec = ref('');
+  const savedConfigurationText = ref('');
   const environment = ref<Environment>();
   const capabilities = ref<Capabilities>({});
   const releases = ref<Release[]>([]);
@@ -76,12 +78,15 @@
   const error = ref('');
   const feedback = ref('');
   let timer: ReturnType<typeof setInterval> | undefined;
-  let refreshing = false;
+  let pendingRefresh: Promise<void> | undefined;
   const run = computed(() => runs.value.find((value) => value.id === job.value?.currentRunId));
   const running = computed(() => run.value?.run_state === 'RUNNING');
   const lock = computed(() => busy.value || Boolean(job.value?.pendingOperationId));
   const dirty = computed(
-    () => Boolean(spec.value) && JSON.stringify(draftSpec()) !== savedSpec.value,
+    () =>
+      Boolean(spec.value) &&
+      (JSON.stringify(draftContents()) !== savedSpec.value ||
+        configurationText.value !== savedConfigurationText.value),
   );
   const can = (key: string) => capabilities.value[key] === 'AVAILABLE';
   const publishCapability = computed(() =>
@@ -95,38 +100,46 @@
     ),
   );
 
-  async function refresh(initial = false) {
-    if (refreshing) return;
-    refreshing = true;
-    try {
-      const [info, rel, allRuns, points, ops] = await Promise.all([
-        managedGet<Job>(base),
-        managedGet<Release[]>(base + '/releases'),
-        managedGet<Run[]>(base + '/runs'),
-        managedGet<Snapshot[]>(base + '/snapshots'),
-        managedGet<Operation[]>(base + '/operations'),
-      ]);
-      job.value = info;
-      releases.value = rel;
-      runs.value = allRuns;
-      snapshots.value = points;
-      operations.value = ops;
-      if (initial) {
-        const envs = await managedGet<Environment[]>('/environments');
-        environment.value = envs.find((value) => value.id === info.environmentId);
-        capabilities.value = await managedGet<Capabilities>(
-          '/environments/' + info.environmentId + '/capabilities',
-        );
-        spec.value = info.spec;
-        argText.value = info.spec.args.join('\n');
-        editingRevision.value = info.draftRevision;
-        savedSpec.value = JSON.stringify(draftSpec());
-      }
-      if (selected.value) {
-        selected.value = await managedGet<Operation>(base + '/operations/' + selected.value.id);
-      }
-    } finally {
-      refreshing = false;
+  function refresh(initial = false): Promise<void> {
+    if (pendingRefresh) {
+      return initial ? pendingRefresh.catch(() => {}).then(() => refresh(true)) : pendingRefresh;
+    }
+    pendingRefresh = load(initial).finally(() => {
+      pendingRefresh = undefined;
+    });
+    return pendingRefresh;
+  }
+
+  async function load(initial: boolean) {
+    const [info, rel, allRuns, points, ops] = await Promise.all([
+      managedGet<Job>(base),
+      managedGet<Release[]>(base + '/releases'),
+      managedGet<Run[]>(base + '/runs'),
+      managedGet<Snapshot[]>(base + '/snapshots'),
+      managedGet<Operation[]>(base + '/operations'),
+    ]);
+    job.value = info;
+    releases.value = rel;
+    runs.value = allRuns;
+    snapshots.value = points;
+    operations.value = ops;
+    if (initial) {
+      const envs = await managedGet<Environment[]>('/environments');
+      environment.value = envs.find((value) => value.id === info.environmentId);
+      capabilities.value = await managedGet<Capabilities>(
+        '/environments/' + info.environmentId + '/capabilities',
+      );
+      spec.value = info.spec;
+      argText.value = info.spec.args.join('\n');
+      configurationText.value = Object.entries(info.spec.configuration)
+        .map(([key, value]) => `${key}=${value}`)
+        .join('\n');
+      savedConfigurationText.value = configurationText.value;
+      editingRevision.value = info.draftRevision;
+      savedSpec.value = JSON.stringify(draftContents());
+    }
+    if (selected.value) {
+      selected.value = await managedGet<Operation>(base + '/operations/' + selected.value.id);
     }
   }
 
@@ -143,9 +156,23 @@
     }
   }
 
-  function draftSpec() {
+  function draftContents() {
     if (!spec.value) throw new Error(t('managedFlink.failed'));
     return { ...spec.value, args: argText.value ? argText.value.split('\n') : [] };
+  }
+
+  function draftSpec() {
+    const configuration = new Map<string, string>();
+    for (const line of configurationText.value.split('\n')) {
+      if (!line.trim()) continue;
+      const equals = line.indexOf('=');
+      const key = line.slice(0, equals).trim();
+      if (equals < 1 || !key || configuration.has(key)) {
+        throw new Error(t('managedFlink.invalidConfiguration'));
+      }
+      configuration.set(key, line.slice(equals + 1));
+    }
+    return { ...draftContents(), configuration: Object.fromEntries(configuration) };
   }
 
   function save() {
@@ -296,6 +323,13 @@
                 ><Textarea v-model:value="argText" :rows="4"
               /></FormItem>
             </template>
+            <FormItem :label="t('managedFlink.configuration')">
+              <Textarea
+                v-model:value="configurationText"
+                :rows="4"
+                placeholder="execution.checkpointing.interval=4 s"
+              />
+            </FormItem>
             <Space wrap>
               <Button v-auth="'app:update'" :disabled="busy" @click="save">{{
                 t('managedFlink.save')

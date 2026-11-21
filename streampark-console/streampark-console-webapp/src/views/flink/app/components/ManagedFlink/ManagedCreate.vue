@@ -104,7 +104,16 @@
 
   function addConnection() {
     void run(async () => {
-      const id = await managedPost<string>('/connections', { ...connection });
+      const credentials =
+        connection.accessKey || connection.secretKey
+          ? { accessKey: connection.accessKey, secretKey: connection.secretKey }
+          : {};
+      const id = await managedPost<string>('/connections', {
+        name: connection.name,
+        provider: connection.provider,
+        accountRef: connection.accountRef,
+        ...credentials,
+      });
       connection.accessKey = '';
       connection.secretKey = '';
       connections.value = await managedGet('/connections');
