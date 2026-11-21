@@ -107,6 +107,9 @@ final class VolcengineExecutable {
   }
 
   static boolean hasSupportedArgs(Spec spec) {
+    if (spec.getArgs().size() == 1 && spec.getArgs().get(0).isEmpty()) {
+      return false;
+    }
     return base64Arguments(spec)
         || spec.getArgs().stream()
             .allMatch(
@@ -151,13 +154,12 @@ final class VolcengineExecutable {
     if (config == null) {
       return false;
     }
-    JsonObject settings = settings(step);
-    for (Map.Entry<String, JsonElement> entry : settings.entrySet()) {
-      if (!Objects.equals(entry.getValue(), config.get(entry.getKey()))) {
-        return false;
-      }
+    JsonObject observed = config.deepCopy();
+    if (!draft) {
+      observed.remove("snapshot.namespace");
+      observed.remove("checkpoint.restore-savepoint-path");
     }
-    if (draft && !empty(remote.get("Options"))) {
+    if (!settings(step).equals(observed) || (draft && !empty(remote.get("Options")))) {
       return false;
     }
     String artifact = artifact(step);

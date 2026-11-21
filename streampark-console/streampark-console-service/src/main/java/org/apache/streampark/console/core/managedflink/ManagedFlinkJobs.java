@@ -429,6 +429,12 @@ public class ManagedFlinkJobs {
     frozen.setSpec(store.decode(text(version, "spec"), Spec.class));
     frozen.setReleaseMarker(release);
     frozen.setArtifactRef(text(version, "artifact_ref"));
+    String artifactId = specArtifactId(frozen.getSpec());
+    if (artifactId != null) {
+      Map<String, Object> releasedArtifact = artifact(app, artifactId);
+      frozen.setArtifactDigest(text(releasedArtifact, "digest"));
+      frozen.setArtifactSize(number(releasedArtifact, "size_bytes"));
+    }
     frozen.setSpecHash(text(version, "spec_hash"));
     frozen.setProviderVersion(text(version, "provider_version"));
     frozen.setActions(Collections.singletonList(Action.START));

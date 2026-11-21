@@ -105,6 +105,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     if (!VolcengineExecutable.supportedConfiguration(spec)) {
       return "Flink configuration exceeds the configured Volcengine runtime settings";
     }
+    if (spec.getType() == JobType.JAR
+        && spec.getArgs().size() == 1
+        && spec.getArgs().get(0).isEmpty()) {
+      return "A single empty Volcengine program argument cannot be distinguished from no arguments";
+    }
     if (spec.getType() == JobType.JAR && !VolcengineExecutable.hasSupportedArgs(spec)) {
       return "Volcengine splits text arguments at whitespace. Use args.base64.enabled=true "
           + "with a main class that decodes the Base64 argument vector";
@@ -327,6 +332,16 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
               null,
               "Id");
         case START:
+          if (VolcengineExecutable.artifact(step) != null) {
+            if (!binding.permitsArtifacts(context)) {
+              return rejected("CAPABILITY_UNVERIFIED");
+            }
+            Observation verified = artifacts.stage(context, step, false);
+            if (verified.getOutcome() != Outcome.CONFIRMED
+                || !Objects.equals(verified.getArtifactRef(), step.getCommand().getArtifactRef())) {
+              return rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
+            }
+          }
           return supportedSpec(context, step)
               ? start(api, target, step, binding.permitsSnapshots(context))
               : rejected("UNVERIFIED_SPEC");

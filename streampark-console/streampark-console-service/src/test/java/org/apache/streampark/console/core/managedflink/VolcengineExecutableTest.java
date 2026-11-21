@@ -76,6 +76,12 @@ class VolcengineExecutableTest {
 
     assertThat(VolcengineExecutable.revision(running))
         .isEqualTo(VolcengineExecutable.revision(published));
+    assertThat(VolcengineExecutable.matches(running, step, false)).isTrue();
+    JsonObject changedDraft = draft.deepCopy();
+    JsonObject dynamic = VolcengineExecutable.objectValue(changedDraft.get("DynamicOptions"));
+    dynamic.addProperty("containerized.taskmanager.env.OUT_OF_BAND", "unexpected");
+    changedDraft.addProperty("DynamicOptions", dynamic.toString());
+    assertThat(VolcengineExecutable.matches(changedDraft, step, true)).isFalse();
     jars.add("tos://fixture-bucket/test/external-jar.jar");
     assertThat(VolcengineExecutable.matches(published, step, false)).isFalse();
   }

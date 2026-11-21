@@ -20,6 +20,35 @@ limitations under the License.
 Run each streaming case against `FLINK_VERSION_1_16`, `FLINK_VERSION_1_17`, and
 `FLINK_VERSION_1_20` in an authorized test directory and pool.
 
+Configure the Console with a deployment-owned profile scoped to the same
+team, cloud account, project, directory, and pool.
+
+```yaml
+streampark:
+  managed-flink:
+    enabled: true
+    artifact-directory: /path/to/local/artifacts
+    volcengine:
+      profile: default
+      team-id: 100000
+      account: YOUR_CLOUD_ACCOUNT_ID
+      project-id: YOUR_FLINK_PROJECT_ID
+      directory-id: YOUR_FLINK_DIRECTORY_ID
+      pool-id: YOUR_RESOURCE_POOL_ID
+      pool-name: YOUR_RESOURCE_POOL_NAME
+      engine: FLINK_VERSION_1_16,FLINK_VERSION_1_17,FLINK_VERSION_1_20
+      sql-lifecycle-enabled: true
+      snapshot-lifecycle-enabled: true
+      artifact-lifecycle-enabled: true
+      artifact-bucket: YOUR_TEST_BUCKET
+      artifact-prefix: YOUR_TEST_PREFIX
+```
+
+Create a Volcengine connection for the configured account with empty AK and
+SK fields. Use the exact same IDs and artifact target in the managed
+environment. The artifact prefix should grant the Console upload access and
+the Flink runtime read access.
+
 Build the fixtures with a Java compiler that supports `--release 8`. Use the
 Flink table-common JAR for the UDF. Use the Flink core, runtime, and streaming
 Java JARs for the standalone job.
