@@ -21,6 +21,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.ToString;
+import lombok.Value;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,6 +48,7 @@ public final class ManagedFlinkModels {
   public enum Action {
     STAGE_ARTIFACT,
     CREATE_DRAFT,
+    LOCK_DRAFT,
     UPDATE_DRAFT,
     PUBLISH,
     START,
@@ -167,6 +169,8 @@ public final class ManagedFlinkModels {
     private String providerInstance;
     private String restoreRef;
     private String artifactRef;
+    private String artifactDigest;
+    private Long artifactSize;
   }
 
   @Data
@@ -191,6 +195,24 @@ public final class ManagedFlinkModels {
     private final String draftId;
     private final String providerJobId;
     private final String stagedArtifact;
+  }
+
+  public enum ReadStatus {
+    FOUND,
+    MISSING,
+    STALE,
+    AUTH_ERROR
+  }
+
+  @Value
+  public static class CloudState {
+    ReadStatus status;
+    String jobId;
+    String version;
+    String instanceId;
+    String runtimeId;
+    String runState;
+    long startedAt;
   }
 
   @Data

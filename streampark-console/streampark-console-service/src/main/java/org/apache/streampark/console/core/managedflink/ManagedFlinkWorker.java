@@ -19,11 +19,13 @@ package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.enums.FlinkAppState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -32,6 +34,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -113,7 +121,7 @@ class ManagedFlinkWorker {
       tx.executeWithoutResult(
           t -> {
             if (owns(operation, epoch)) {
-              finish(op, attempt == null && index == 0 ? "FAILED" : "VERIFY_REQUIRED");
+              finish(op, attempt == null ? "FAILED" : "VERIFY_REQUIRED");
             }
           });
       return;
@@ -128,12 +136,36 @@ class ManagedFlinkWorker {
       tx.executeWithoutResult(
           t -> {
             if (owns(operation, epoch)) {
-              finish(op, attempt == null && index == 0 ? "FAILED" : "VERIFY_REQUIRED");
+              finish(op, attempt == null ? "FAILED" : "VERIFY_REQUIRED");
             }
           });
       return;
     }
     if (attempt == null) {
+      String conflict = preflight(provider, context, step, job);
+      if (conflict != null) {
+        tx.executeWithoutResult(
+            t -> {
+              if (owns(operation, epoch)) {
+                if (!"ARTIFACT_UNREADABLE".equals(conflict)) {
+                  store.sql.update(
+                      "update t_flink_managed_job set sync_status=? where app_id=?", conflict, app);
+                }
+                store.sql.update(
+                    "insert into t_flink_managed_operation_step "
+                        + "(operation_id,step_index,action,state,error_code,started_at,finished_at) "
+                        + "values (?,?,?,'FAILED',?,?,?)",
+                    operation,
+                    index,
+                    action.name(),
+                    conflict,
+                    System.currentTimeMillis(),
+                    System.currentTimeMillis());
+                finish(op, "FAILED");
+              }
+            });
+        return;
+      }
       if (!Boolean.TRUE.equals(tx.execute(t -> markDispatch(step, epoch, index)))) {
         return;
       }
@@ -174,6 +206,68 @@ class ManagedFlinkWorker {
             apply(op, job, step, index, evidence);
           }
         });
+  }
+
+  private String preflight(
+      ManagedFlinkProvider provider, Context context, OperationStep step, Map<String, Object> job) {
+    if (step.getAction() == Action.STAGE_ARTIFACT) {
+      return artifactMatches(step.getCommand()) ? null : "ARTIFACT_UNREADABLE";
+    }
+    if (step.getProviderJobId() == null) {
+      return null;
+    }
+    CloudState state;
+    try {
+      state = provider.inspect(context, step.getProviderJobId());
+    } catch (RuntimeException e) {
+      return "STALE";
+    }
+    if (state == null) {
+      return null;
+    }
+    if (state.getStatus() != ReadStatus.FOUND) {
+      return state.getStatus() == ReadStatus.AUTH_ERROR ? "AUTH_ERROR" : "STALE";
+    }
+    Map<String, Object> release = jobs.release(step.getAppId(), text(job, "active_release_id"));
+    if (!Objects.equals(step.getProviderJobId(), state.getJobId())
+        || !Objects.equals(text(release, "provider_version"), state.getVersion())) {
+      return "DRIFTED";
+    }
+    boolean stopped =
+        state.getInstanceId() == null
+            || java.util.Arrays.asList("STOPPED", "FAILED", "FINISHED")
+                .contains(state.getRunState());
+    if (step.getAction() == Action.STOP || step.getAction() == Action.SNAPSHOT) {
+      return !stopped
+              && Objects.equals(step.getCommand().getProviderInstance(), state.getInstanceId())
+          ? null
+          : "DRIFTED";
+    }
+    return stopped ? null : "DRIFTED";
+  }
+
+  private boolean artifactMatches(FrozenCommand command) {
+    if (command.getArtifactRef() == null || command.getArtifactSize() == null) {
+      return false;
+    }
+    Path path = Paths.get(command.getArtifactRef());
+    try (InputStream input = Files.newInputStream(path)) {
+      MessageDigest digest = ManagedFlinkStore.sha256();
+      byte[] buffer = new byte[8192];
+      long total = 0;
+      int count;
+      while ((count = input.read(buffer)) != -1) {
+        total += count;
+        if (total > command.getArtifactSize()) {
+          return false;
+        }
+        digest.update(buffer, 0, count);
+      }
+      return total == command.getArtifactSize()
+          && Objects.equals(command.getArtifactDigest(), ManagedFlinkStore.hex(digest.digest()));
+    } catch (IOException e) {
+      return false;
+    }
   }
 
   private Map<String, Object> claim(String operation) {
@@ -293,6 +387,8 @@ class ManagedFlinkWorker {
             result.getDraftId(),
             app);
         return true;
+      case LOCK_DRAFT:
+        return step.getDraftId() != null && step.getDraftId().equals(result.getDraftId());
       case UPDATE_DRAFT:
         return Objects.equals(step.getDraftId(), result.getDraftId())
             && step.getDraftId() != null

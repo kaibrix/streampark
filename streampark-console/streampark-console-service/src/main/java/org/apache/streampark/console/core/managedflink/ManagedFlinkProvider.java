@@ -18,6 +18,7 @@
 package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
@@ -48,6 +49,10 @@ public interface ManagedFlinkProvider {
     }
     steps.addAll(Arrays.asList(Action.UPDATE_DRAFT, Action.PUBLISH));
     return steps;
+  }
+
+  default CloudState inspect(Context context, String jobId) {
+    return null;
   }
 
   /** Dispatches at most once. Even a confirmed acknowledgement is followed by an observation. */

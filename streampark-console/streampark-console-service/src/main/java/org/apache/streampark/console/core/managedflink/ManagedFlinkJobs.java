@@ -189,7 +189,7 @@ public class ManagedFlinkJobs {
     }
     check(text(job, "pending_operation_id") == null, HttpStatus.CONFLICT, "A command is pending");
     check(
-        !"DRIFTED".equals(text(job, "sync_status")) && !"MISSING".equals(text(job, "sync_status")),
+        (text(job, "provider_job_id") == null || "FRESH".equals(text(job, "sync_status"))),
         HttpStatus.CONFLICT,
         "Cloud mapping requires verification");
     Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), true);
@@ -282,6 +282,8 @@ public class ManagedFlinkJobs {
     if (spec.getType() == JobType.JAR) {
       Map<String, Object> artifact = artifact(app, spec.getArtifactId());
       frozen.setArtifactRef(text(artifact, "object_ref"));
+      frozen.setArtifactDigest(text(artifact, "digest"));
+      frozen.setArtifactSize(number(artifact, "size_bytes"));
       if (spec.getMainClass() == null || spec.getMainClass().trim().isEmpty()) {
         spec.setMainClass(text(artifact, "main_class"));
       }

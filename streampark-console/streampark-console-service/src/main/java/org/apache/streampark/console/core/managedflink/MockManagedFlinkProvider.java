@@ -18,11 +18,13 @@
 package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -38,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 class MockManagedFlinkProvider implements ManagedFlinkProvider {
 
   private final Map<String, Observation> applied = new ConcurrentHashMap<>();
+  private final Map<String, CloudState> state = new ConcurrentHashMap<>();
 
   @Override
   public String id() {
@@ -76,6 +79,7 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
     if (applied.putIfAbsent(key(step), recorded) != null) {
       return Observation.outcome(Outcome.REJECTED, "DUPLICATE_PROVIDER_DISPATCH");
     }
+    applyState(step, recorded);
     Observation ack = Observation.outcome(Outcome.WAITING, null);
     ack.setRequestId(recorded.getRequestId());
     return ack;
@@ -85,6 +89,45 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
   public Observation observe(Context context, OperationStep step, Observation acknowledgement) {
     Observation observed = applied.get(key(step));
     return observed == null ? Observation.outcome(Outcome.UNKNOWN, "EVIDENCE_PENDING") : observed;
+  }
+
+  @Override
+  public CloudState inspect(Context context, String jobId) {
+    return state.getOrDefault(
+        jobId, new CloudState(ReadStatus.MISSING, jobId, null, null, null, null, 0));
+  }
+
+  void recordState(CloudState value) {
+    state.put(value.getJobId(), value);
+  }
+
+  private void applyState(OperationStep step, Observation result) {
+    String job = result.getJobId();
+    if (step.getAction() == Action.PUBLISH) {
+      recordState(new CloudState(ReadStatus.FOUND, job, result.getVersion(), null, null, null, 0));
+    } else if (step.getAction() == Action.START) {
+      recordState(
+          new CloudState(
+              ReadStatus.FOUND,
+              job,
+              result.getVersion(),
+              result.getInstanceId(),
+              result.getRuntimeId(),
+              result.getRunState(),
+              System.currentTimeMillis()));
+    } else if (step.getAction() == Action.STOP) {
+      state.computeIfPresent(
+          job,
+          (key, old) ->
+              new CloudState(
+                  ReadStatus.FOUND,
+                  job,
+                  old.getVersion(),
+                  result.getInstanceId(),
+                  old.getRuntimeId(),
+                  result.getRunState(),
+                  old.getStartedAt()));
+    }
   }
 
   private Observation createResult(OperationStep step) {
@@ -97,6 +140,9 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
         break;
       case CREATE_DRAFT:
         result.setDraftId("draft-" + step.getAppId());
+        break;
+      case LOCK_DRAFT:
+        result.setDraftId(step.getDraftId());
         break;
       case UPDATE_DRAFT:
         result.setDraftId(step.getDraftId());
@@ -150,7 +196,9 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
       if (type == JobType.JAR) {
         return Arrays.asList(Action.STAGE_ARTIFACT, Action.PUBLISH);
       }
-      return super.publishSteps(type, hasDraft);
+      List<Action> steps = super.publishSteps(type, hasDraft);
+      steps.add(steps.indexOf(Action.UPDATE_DRAFT), Action.LOCK_DRAFT);
+      return steps;
     }
   }
 }

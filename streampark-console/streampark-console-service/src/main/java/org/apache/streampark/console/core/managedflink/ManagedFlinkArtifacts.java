@@ -17,6 +17,11 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import org.apache.streampark.console.core.entity.Project;
+import org.apache.streampark.console.core.enums.BuildState;
+import org.apache.streampark.console.core.service.ProjectService;
+
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
@@ -35,6 +40,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.Map;
+import java.util.Objects;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
@@ -54,6 +60,7 @@ class ManagedFlinkArtifacts {
   private final ManagedFlinkJobs jobs;
   private final String directory;
   private final long maxBytes;
+  @Autowired private ProjectService projects;
 
   ManagedFlinkArtifacts(
       ManagedFlinkStore store,
@@ -69,6 +76,53 @@ class ManagedFlinkArtifacts {
   }
 
   String upload(long team, long app, MultipartFile file) throws IOException {
+    return capture(team, app, file.getSize(), file::getInputStream, () -> {});
+  }
+
+  String importBuild(long team, long app, long projectId, String module, String jar)
+      throws IOException {
+    catalog.authorize(team, "app:update", "project:view");
+    jobs.job(team, app, false);
+    Project project = projects.getById(projectId);
+    check(
+        project != null && Objects.equals(project.getTeamId(), team),
+        HttpStatus.NOT_FOUND,
+        "Project not found");
+    check(
+        Objects.equals(project.getBuildState(), BuildState.SUCCESSFUL.get()),
+        HttpStatus.CONFLICT,
+        "A successfully built project is required");
+    check(
+        module != null
+            && module.matches("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,254}")
+            && jar != null
+            && jar.matches("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,250}\\.jar"),
+        HttpStatus.BAD_REQUEST,
+        "Expected a module and JAR filename");
+    Path root = project.getDistHome().toPath().toRealPath();
+    Path source = root.resolve(module).resolve(jar).toRealPath();
+    check(
+        source.startsWith(root) && Files.isRegularFile(source),
+        HttpStatus.NOT_FOUND,
+        "Project artifact not found");
+    return capture(
+        team,
+        app,
+        Files.size(source),
+        () -> Files.newInputStream(source),
+        () -> {
+          Project latest = projects.getById(projectId);
+          check(
+              latest != null
+                  && Objects.equals(latest.getBuildState(), BuildState.SUCCESSFUL.get())
+                  && Objects.equals(latest.getLastBuild(), project.getLastBuild()),
+              HttpStatus.CONFLICT,
+              "Project build changed while importing its JAR");
+        });
+  }
+
+  private String capture(long team, long app, long size, ArtifactSource source, Runnable verify)
+      throws IOException {
     catalog.authorize(team, "app:update");
     Map<String, Object> job = jobs.job(team, app, false);
     ManagedFlinkModels.Spec spec =
@@ -81,10 +135,7 @@ class ManagedFlinkArtifacts {
         !directory.trim().isEmpty(),
         HttpStatus.UNPROCESSABLE_ENTITY,
         "Artifact staging is not configured");
-    check(
-        file.getSize() > 0 && file.getSize() <= maxBytes,
-        HttpStatus.PAYLOAD_TOO_LARGE,
-        "Invalid artifact size");
+    check(size > 0 && size <= maxBytes, HttpStatus.PAYLOAD_TOO_LARGE, "Invalid artifact size");
     Path root =
         Paths.get(directory)
             .toAbsolutePath()
@@ -96,10 +147,12 @@ class ManagedFlinkArtifacts {
     try {
       MessageDigest digest = sha256();
       long total;
-      try (InputStream source = file.getInputStream();
+      try (InputStream input = source.open();
           OutputStream output = Files.newOutputStream(temp)) {
-        total = copy(source, output, digest, maxBytes);
+        total = copy(input, output, digest, maxBytes);
       }
+      verify.run();
+      check(total == size, HttpStatus.CONFLICT, "Artifact size changed during capture");
       String mainClass = readMainClass(temp);
       String sha = hex(digest.digest());
       Path artifact = root.resolve(sha + ".jar");
@@ -137,6 +190,11 @@ class ManagedFlinkArtifacts {
     } finally {
       Files.deleteIfExists(temp);
     }
+  }
+
+  @FunctionalInterface
+  private interface ArtifactSource {
+    InputStream open() throws IOException;
   }
 
   private String readMainClass(Path file) {

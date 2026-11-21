@@ -46,6 +46,8 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import javax.servlet.http.HttpServletRequest;
+
 import java.io.IOException;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -82,7 +84,12 @@ public class ManagedFlinkController {
   }
 
   @PostMapping("/connections")
-  Body<String> createConnection(@RequestParam long teamId, @RequestBody ConnectionInput input) {
+  Body<String> createConnection(
+      @RequestParam long teamId, @RequestBody ConnectionInput input, HttpServletRequest request) {
+    check(
+        input.getSecretKey() == null || input.getSecretKey().isEmpty() || request.isSecure(),
+        HttpStatus.BAD_REQUEST,
+        "An HTTPS request is required to submit credentials");
     return ok(catalog.createConnection(teamId, input));
   }
 
@@ -98,7 +105,12 @@ public class ManagedFlinkController {
       @RequestParam long teamId,
       @PathVariable String id,
       @RequestParam String environmentId,
-      @RequestBody ConnectionInput input) {
+      @RequestBody ConnectionInput input,
+      HttpServletRequest request) {
+    check(
+        request.isSecure(),
+        HttpStatus.BAD_REQUEST,
+        "An HTTPS request is required to rotate credentials");
     return ok(catalog.rotateConnection(teamId, id, environmentId, input));
   }
 
@@ -166,6 +178,20 @@ public class ManagedFlinkController {
       @RequestParam long teamId, @PathVariable long appId, @RequestParam MultipartFile file)
       throws IOException {
     return ok(artifacts.upload(teamId, appId, file));
+  }
+
+  @PostMapping("/apps/{appId}/artifacts/project")
+  Body<String> importBuild(
+      @RequestParam long teamId, @PathVariable long appId, @RequestBody ProjectArtifact input)
+      throws IOException {
+    return ok(artifacts.importBuild(teamId, appId, input.projectId, input.module, input.jar));
+  }
+
+  @lombok.Data
+  static class ProjectArtifact {
+    private long projectId;
+    private String module;
+    private String jar;
   }
 
   @GetMapping("/apps/{appId}/artifacts/{id}")
@@ -415,6 +441,11 @@ public class ManagedFlinkController {
   })
   ResponseEntity<Body<Void>> invalid() {
     return failure(HttpStatus.BAD_REQUEST, "Invalid managed Flink request");
+  }
+
+  @ExceptionHandler(IOException.class)
+  ResponseEntity<Body<Void>> unreadableArtifact() {
+    return failure(HttpStatus.UNPROCESSABLE_ENTITY, "The managed artifact is unavailable");
   }
 
   private ResponseEntity<Body<Void>> failure(HttpStatus status, String message) {
