@@ -91,6 +91,17 @@ final class VolcengineOpenApi {
         STS, "sts", "GET", "GetCallerIdentity", "2018-01-01", java.util.Collections.emptyMap(), "");
   }
 
+  Reply metric(JsonObject body) throws IOException {
+    return call(
+        ENDPOINT,
+        "cloudmonitor",
+        "POST",
+        "GetMetricData",
+        "2018-01-01",
+        java.util.Collections.emptyMap(),
+        body.toString());
+  }
+
   private Reply call(
       HttpUrl endpoint,
       String service,

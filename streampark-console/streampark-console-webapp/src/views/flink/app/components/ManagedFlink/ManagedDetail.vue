@@ -67,6 +67,12 @@
   const capabilities = ref<Capabilities>({});
   const releases = ref<Release[]>([]);
   const runs = ref<Run[]>([]);
+  const metricRun = ref<string>();
+  const metrics = ref<{
+    status: string;
+    source?: string;
+    series?: { name: string; unit: string; points: { timestamp: number; value: number }[] }[];
+  }>();
   const snapshots = ref<Snapshot[]>([]);
   const operations = ref<Operation[]>([]);
   const selected = ref<Operation>();
@@ -255,6 +261,14 @@
     void action(async () => {
       await managedPost(base + '/operations/' + id + '/reconcile', {});
       await refresh();
+    });
+  }
+
+  function readMetrics() {
+    const id = metricRun.value || job.value?.currentRunId;
+    if (!id) return;
+    void action(async () => {
+      metrics.value = await managedGet(base + `/runs/${id}/metrics`);
     });
   }
 
@@ -480,6 +494,40 @@
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <p>{{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}</p>
           <p>{{ t('managedFlink.metrics') }} · {{ capabilities.METRICS || 'UNVERIFIED' }}</p>
+          <template v-if="can('METRICS') && runs.length">
+            <Space wrap>
+              <Select
+                :value="metricRun || job.currentRunId"
+                style="min-width: 220px"
+                :options="
+                  runs.map((entry) => ({
+                    value: entry.id,
+                    label: `${entry.provider_instance_id} · ${entry.run_state}`,
+                  }))
+                "
+                @change="
+                  (id) => {
+                    metricRun = String(id);
+                    metrics = undefined;
+                  }
+                "
+              />
+              <Button :loading="busy" @click="readMetrics">{{
+                t('managedFlink.loadMetrics')
+              }}</Button>
+            </Space>
+            <div v-if="metrics" class="mt-4">
+              <p>{{ metrics.source }} {{ metrics.status }}</p>
+              <details v-for="series in metrics.series" :key="series.name" class="mb-2">
+                <summary>{{ series.name }} · {{ series.unit }}</summary>
+                <ul>
+                  <li v-for="point in series.points" :key="point.timestamp">
+                    {{ new Date(point.timestamp * 1000).toLocaleString() }} · {{ point.value }}
+                  </li>
+                </ul>
+              </details>
+            </div>
+          </template>
         </TabPane>
       </Tabs>
       <Drawer

@@ -190,6 +190,24 @@ public class ManagedFlinkJobs {
     }
   }
 
+  Map<String, Object> diagnostics(long team, long app, String runId, String source) {
+    Map<String, Object> job = job(team, app, false);
+    Map<String, Object> run =
+        store.require(
+            "select provider_instance_id from t_flink_managed_run where app_id=? and id=?",
+            app,
+            runId);
+    Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> connection = catalog.connection(team, text(env, "connection_id"));
+    return catalog
+        .provider(text(connection, "provider"))
+        .diagnostics(
+            catalog.context(connection, env, null),
+            text(job, "provider_job_id"),
+            text(run, "provider_instance_id"),
+            source);
+  }
+
   @Transactional(isolation = Isolation.READ_COMMITTED)
   public String enqueue(long team, long app, CommandType type, String key, Command cmd) {
     long actor = catalog.authorize(team, permission(type));

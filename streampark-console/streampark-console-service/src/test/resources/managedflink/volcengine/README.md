@@ -40,6 +40,7 @@ streampark:
       sql-lifecycle-enabled: true
       snapshot-lifecycle-enabled: true
       artifact-lifecycle-enabled: true
+      metrics-enabled: true
       artifact-bucket: YOUR_TEST_BUCKET
       artifact-prefix: YOUR_TEST_PREFIX
 ```
@@ -48,6 +49,9 @@ Create a Volcengine connection for the configured account with empty AK and
 SK fields. Use the exact same IDs and artifact target in the managed
 environment. The artifact prefix should grant the Console upload access and
 the Flink runtime read access.
+
+The metrics option uses Volcengine Cloud Monitor reads for CPU and memory
+usage. Enable it after verifying access to the test deployment dimensions.
 
 Build the fixtures with a Java compiler that supports `--release 8`. Use the
 Flink table-common JAR for the UDF. Use the Flink core, runtime, and streaming

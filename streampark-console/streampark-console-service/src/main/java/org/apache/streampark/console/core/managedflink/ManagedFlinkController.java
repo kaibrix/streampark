@@ -262,14 +262,13 @@ public class ManagedFlinkController {
   }
 
   @GetMapping("/apps/{appId}/runs/{id}/{source:events|logs|metrics}")
-  Body<Map<String, String>> diagnostics(
+  Body<Map<String, Object>> diagnostics(
       @RequestParam long teamId,
       @PathVariable long appId,
       @PathVariable String id,
       @PathVariable String source) {
     requireRead(teamId, appId);
-    store.require("select id from t_flink_managed_run where app_id=? and id=?", appId, id);
-    return ok(Collections.singletonMap("status", "UNVERIFIED"));
+    return ok(jobs.diagnostics(teamId, appId, id, source));
   }
 
   @GetMapping("/apps/{appId}/snapshots")

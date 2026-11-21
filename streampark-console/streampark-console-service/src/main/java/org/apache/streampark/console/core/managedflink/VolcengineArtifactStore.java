@@ -39,7 +39,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.hex;
@@ -99,7 +99,7 @@ final class VolcengineArtifactStore {
                       .setBucket(bucket)
                       .setKey(key)
                       .setForbidOverwrite(true)
-                      .setFile(Path.of(command.getArtifactRef()).toFile()))
+                      .setFile(Paths.get(command.getArtifactRef()).toFile()))
               .getRequestInfo()
               .getRequestId());
       return uploaded;

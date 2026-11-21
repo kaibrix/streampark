@@ -45,6 +45,7 @@ final class VolcengineProfileBinding {
   private final boolean sqlWrites;
   private final boolean snapshots;
   private final boolean artifacts;
+  private final boolean diagnostics;
   private final String artifactBucket;
   private final String artifactPrefix;
 
@@ -63,6 +64,7 @@ final class VolcengineProfileBinding {
           boolean snapshots,
       @Value("${streampark.managed-flink.volcengine.artifact-lifecycle-enabled:false}")
           boolean artifacts,
+      @Value("${streampark.managed-flink.volcengine.metrics-enabled:false}") boolean diagnostics,
       @Value("${streampark.managed-flink.volcengine.artifact-bucket:}") String artifactBucket,
       @Value("${streampark.managed-flink.volcengine.artifact-prefix:}") String artifactPrefix) {
     provider =
@@ -77,6 +79,7 @@ final class VolcengineProfileBinding {
     this.sqlWrites = sqlWrites;
     this.snapshots = snapshots;
     this.artifacts = artifacts;
+    this.diagnostics = diagnostics;
     this.artifactBucket = artifactBucket;
     this.artifactPrefix = artifactPrefix;
   }
@@ -123,6 +126,10 @@ final class VolcengineProfileBinding {
         && artifactPrefix.matches("[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*")
         && artifactBucket.equals(context.getTarget().getArtifactBucket())
         && artifactPrefix.equals(context.getTarget().getArtifactPrefix());
+  }
+
+  boolean permitsMetricReads(Context context) {
+    return diagnostics && context.isServerCredential() && permits(context);
   }
 
   synchronized Credentials credentials(Context context) throws ApiException {

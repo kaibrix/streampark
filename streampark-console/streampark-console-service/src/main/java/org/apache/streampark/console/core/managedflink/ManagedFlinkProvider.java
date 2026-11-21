@@ -27,6 +27,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -70,6 +71,11 @@ public interface ManagedFlinkProvider {
    */
   default CloudState inspect(Context context, String jobId) {
     return null;
+  }
+
+  default Map<String, Object> diagnostics(
+      Context context, String jobId, String instanceId, String source) {
+    return Collections.singletonMap("status", "UNVERIFIED");
   }
 
   /** Dispatches at most once. Even a confirmed acknowledgement is followed by an observation. */

@@ -144,6 +144,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         report.put("RESTORE_FROM_SNAPSHOT", "AVAILABLE");
       }
     }
+    if (binding.permitsMetricReads(context)) {
+      report.put("METRICS", "AVAILABLE");
+    }
+    if (context.getTarget().getTlsTopic() == null || context.getTarget().getTlsTopic().isEmpty()) {
+      report.replace("LOG_SEARCH", "UNVERIFIED", "NEEDS_CONFIGURATION");
+    }
     return report;
   }
 
@@ -248,6 +254,26 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           current == null ? 0 : startedAt(current));
     } catch (IOException | RuntimeException e) {
       return readFailure(jobId, ReadStatus.STALE);
+    }
+  }
+
+  @Override
+  public Map<String, Object> diagnostics(
+      Context context, String jobId, String instanceId, String source) {
+    if ("logs".equals(source)) {
+      return Collections.singletonMap("status", capabilities(context).get("LOG_SEARCH"));
+    }
+    if (!"metrics".equals(source) || !binding.permitsMetricReads(context)) {
+      return ManagedFlinkProvider.super.diagnostics(context, jobId, instanceId, source);
+    }
+    try {
+      VolcengineOpenApi api = client(context);
+      Target target = context.getTarget();
+      JsonObject published = api == null ? null : application(api, target, jobId);
+      JsonObject run = published == null ? null : instance(api, target, jobId, instanceId);
+      return run == null ? VolcengineMonitor.status("STALE") : VolcengineMonitor.read(api, run);
+    } catch (IOException | RuntimeException e) {
+      return VolcengineMonitor.status("STALE");
     }
   }
 
@@ -512,7 +538,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         instanceId == null ? null : instance(api, target, step.getProviderJobId(), instanceId);
     return job != null
         && current != null
-        && same(job, "ApplicationId", instanceId)
+        && same(job, "ApplicationId", text(current, "ApplicationId"))
         && same(current, "State", "RUNNING");
   }
 
