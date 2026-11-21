@@ -76,12 +76,14 @@ class ManagedFlinkWorker {
   void tick() {
     long now = System.currentTimeMillis();
     List<Map<String, Object>> due =
-        store.sql.queryForList(
-            "select id from t_flink_managed_operation where status in ('PENDING','EXECUTING','WAITING_PROVIDER') "
-                + "and next_run_at<=? and (lease_until is null or lease_until<=?) "
-                + "order by next_run_at, id limit 16",
-            now,
-            now);
+        store
+            .jdbc()
+            .queryForList(
+                "select id from t_flink_managed_operation where status in ('PENDING','EXECUTING','WAITING_PROVIDER') "
+                    + "and next_run_at<=? and (lease_until is null or lease_until<=?) "
+                    + "order by next_run_at, id limit 16",
+                now,
+                now);
     for (Map<String, Object> row : due) {
       String operation = text(row, "id");
       try {
@@ -148,19 +150,25 @@ class ManagedFlinkWorker {
             t -> {
               if (owns(operation, epoch)) {
                 if (!"ARTIFACT_UNREADABLE".equals(conflict)) {
-                  store.sql.update(
-                      "update t_flink_managed_job set sync_status=? where app_id=?", conflict, app);
+                  store
+                      .jdbc()
+                      .update(
+                          "update t_flink_managed_job set sync_status=? where app_id=?",
+                          conflict,
+                          app);
                 }
-                store.sql.update(
-                    "insert into t_flink_managed_operation_step "
-                        + "(operation_id,step_index,action,state,error_code,started_at,finished_at) "
-                        + "values (?,?,?,'FAILED',?,?,?)",
-                    operation,
-                    index,
-                    action.name(),
-                    conflict,
-                    System.currentTimeMillis(),
-                    System.currentTimeMillis());
+                store
+                    .jdbc()
+                    .update(
+                        "insert into t_flink_managed_operation_step "
+                            + "(operation_id,step_index,action,state,error_code,started_at,finished_at) "
+                            + "values (?,?,?,'FAILED',?,?,?)",
+                        operation,
+                        index,
+                        action.name(),
+                        conflict,
+                        System.currentTimeMillis(),
+                        System.currentTimeMillis());
                 finish(op, "FAILED");
               }
             });
@@ -275,17 +283,19 @@ class ManagedFlinkWorker {
     return tx.execute(
         t -> {
           int changed =
-              store.sql.update(
-                  "update t_flink_managed_operation set status='EXECUTING',"
-                      + "lease_owner=?,lease_until=?,lease_epoch=lease_epoch+1,updated_at=? where id=? "
-                      + "and status in ('PENDING','EXECUTING','WAITING_PROVIDER') and next_run_at<=? "
-                      + "and (lease_until is null or lease_until<=?)",
-                  owner,
-                  now + LEASE_MS,
-                  now,
-                  operation,
-                  now,
-                  now);
+              store
+                  .jdbc()
+                  .update(
+                      "update t_flink_managed_operation set status='EXECUTING',"
+                          + "lease_owner=?,lease_until=?,lease_epoch=lease_epoch+1,updated_at=? where id=? "
+                          + "and status in ('PENDING','EXECUTING','WAITING_PROVIDER') and next_run_at<=? "
+                          + "and (lease_until is null or lease_until<=?)",
+                      owner,
+                      now + LEASE_MS,
+                      now,
+                      operation,
+                      now,
+                      now);
           return changed == 0
               ? null
               : store.require("select * from t_flink_managed_operation where id=?", operation);
@@ -325,13 +335,15 @@ class ManagedFlinkWorker {
     if (!owns(step.getOperationId(), epoch)) {
       return false;
     }
-    store.sql.update(
-        "insert into t_flink_managed_operation_step "
-            + "(operation_id,step_index,action,state,started_at) values (?,?,?,'DISPATCHING',?)",
-        step.getOperationId(),
-        index,
-        step.getAction().name(),
-        System.currentTimeMillis());
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_operation_step "
+                + "(operation_id,step_index,action,state,started_at) values (?,?,?,'DISPATCHING',?)",
+            step.getOperationId(),
+            index,
+            step.getAction().name(),
+            System.currentTimeMillis());
     return true;
   }
 
@@ -348,12 +360,14 @@ class ManagedFlinkWorker {
     }
     if (evidence.getOutcome() != Outcome.CONFIRMED || !project(op, job, step, evidence)) {
       // Preserve the acknowledged identity if a temporary read failure returned no evidence.
-      store.sql.update(
-          "update t_flink_managed_operation_step set error_code=? "
-              + "where operation_id=? and step_index=?",
-          safe(evidence.getCode(), 64),
-          step.getOperationId(),
-          index);
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_operation_step set error_code=? "
+                  + "where operation_id=? and step_index=?",
+              safe(evidence.getCode(), 64),
+              step.getOperationId(),
+              index);
       defer(step.getOperationId());
       return;
     }
@@ -363,9 +377,11 @@ class ManagedFlinkWorker {
     } else if (index + 1 == step.getCommand().getActions().size()) {
       finish(op, "SUCCEEDED");
     } else {
-      store.sql.update(
-          "update t_flink_managed_operation set step_index=step_index+1 where id=?",
-          step.getOperationId());
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_operation set step_index=step_index+1 where id=?",
+              step.getOperationId());
       defer(step.getOperationId());
     }
   }
@@ -382,10 +398,12 @@ class ManagedFlinkWorker {
         if (!hasId(result.getDraftId(), 191)) {
           return false;
         }
-        store.sql.update(
-            "update t_flink_managed_job set provider_draft_id=? where app_id=?",
-            result.getDraftId(),
-            app);
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_job set provider_draft_id=? where app_id=?",
+                result.getDraftId(),
+                app);
         return true;
       case LOCK_DRAFT:
         return step.getDraftId() != null && step.getDraftId().equals(result.getDraftId());
@@ -401,20 +419,24 @@ class ManagedFlinkWorker {
                 && !step.getProviderJobId().equals(result.getJobId()))) {
           return false;
         }
-        store.sql.update(
-            "update t_flink_managed_release set provider_version=?,artifact_ref=?,status='PUBLISHED' "
-                + "where id=?",
-            result.getVersion(),
-            step.getStagedArtifact(),
-            release);
-        store.sql.update(
-            "update t_flink_managed_job set provider_job_id=?,active_release_id=?,"
-                + "observed_at=?,sync_status='FRESH' where app_id=?",
-            result.getJobId(),
-            release,
-            now,
-            app);
-        store.sql.update("update t_flink_app set release=0 where id=?", app);
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_release set provider_version=?,artifact_ref=?,status='PUBLISHED' "
+                    + "where id=?",
+                result.getVersion(),
+                step.getStagedArtifact(),
+                release);
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_job set provider_job_id=?,active_release_id=?,"
+                    + "observed_at=?,sync_status='FRESH' where app_id=?",
+                result.getJobId(),
+                release,
+                now,
+                app);
+        store.jdbc().update("update t_flink_app set release=0 where id=?", app);
         return true;
       case START:
         return start(job, step, result, release, now);
@@ -422,18 +444,22 @@ class ManagedFlinkWorker {
         if (!sameInstance(step, result) || !"STOPPED".equals(result.getRunState())) {
           return false;
         }
-        store.sql.update(
-            "update t_flink_managed_run set run_state='STOPPED',raw_state='STOPPED',"
-                + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
-            now,
-            now,
-            app,
-            result.getInstanceId());
-        store.sql.update(
-            "update t_flink_app set state=?,end_time=? where id=?",
-            FlinkAppState.CANCELED.getValue(),
-            new Date(now),
-            app);
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_run set run_state='STOPPED',raw_state='STOPPED',"
+                    + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
+                now,
+                now,
+                app,
+                result.getInstanceId());
+        store
+            .jdbc()
+            .update(
+                "update t_flink_app set state=?,end_time=? where id=?",
+                FlinkAppState.CANCELED.getValue(),
+                new Date(now),
+                app);
         return true;
       case SNAPSHOT:
         if (!sameInstance(step, result)
@@ -446,19 +472,21 @@ class ManagedFlinkWorker {
             || !Objects.equals(result.getInstanceId(), text(current, "provider_instance_id"))) {
           return false;
         }
-        store.sql.update(
-            "insert into t_flink_managed_snapshot (id,app_id,run_id,release_id,"
-                + "operation_id,provider_record_id,restore_ref,state,restorable,created_at,observed_at) "
-                + "values (?,?,?,?,?,?,?,'AVAILABLE',true,?,?)",
-            id(),
-            app,
-            current.get("id"),
-            current.get("release_id"),
-            step.getOperationId(),
-            result.getRecordId(),
-            result.getRestoreRef(),
-            now,
-            now);
+        store
+            .jdbc()
+            .update(
+                "insert into t_flink_managed_snapshot (id,app_id,run_id,release_id,"
+                    + "operation_id,provider_record_id,restore_ref,state,restorable,created_at,observed_at) "
+                    + "values (?,?,?,?,?,?,?,'AVAILABLE',true,?,?)",
+                id(),
+                app,
+                current.get("id"),
+                current.get("release_id"),
+                step.getOperationId(),
+                result.getRecordId(),
+                result.getRestoreRef(),
+                now,
+                now);
         return true;
       default:
         return false;
@@ -480,32 +508,38 @@ class ManagedFlinkWorker {
     }
     long app = number(job, "app_id");
     String run = id();
-    store.sql.update(
-        "insert into t_flink_managed_run (id,app_id,release_id,provider_instance_id,"
-            + "runtime_application_id,run_state,raw_state,origin,started_at,ended_at,observed_at) "
-            + "values (?,?,?,?,?,?,?,'STREAMPARK',?,?,?)",
-        run,
-        app,
-        release,
-        result.getInstanceId(),
-        result.getRuntimeId(),
-        runState,
-        runState,
-        now,
-        running ? null : now,
-        now);
-    store.sql.update(
-        "update t_flink_managed_job set current_run_id=?,observed_at=?,sync_status='FRESH' "
-            + "where app_id=?",
-        run,
-        now,
-        app);
-    store.sql.update(
-        "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
-        running ? FlinkAppState.RUNNING.getValue() : FlinkAppState.FAILED.getValue(),
-        new Date(now),
-        running ? null : new Date(now),
-        app);
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_run (id,app_id,release_id,provider_instance_id,"
+                + "runtime_application_id,run_state,raw_state,origin,started_at,ended_at,observed_at) "
+                + "values (?,?,?,?,?,?,?,'STREAMPARK',?,?,?)",
+            run,
+            app,
+            release,
+            result.getInstanceId(),
+            result.getRuntimeId(),
+            runState,
+            runState,
+            now,
+            running ? null : now,
+            now);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_job set current_run_id=?,observed_at=?,sync_status='FRESH' "
+                + "where app_id=?",
+            run,
+            now,
+            app);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
+            running ? FlinkAppState.RUNNING.getValue() : FlinkAppState.FAILED.getValue(),
+            new Date(now),
+            running ? null : new Date(now),
+            app);
     return true;
   }
 
@@ -517,52 +551,62 @@ class ManagedFlinkWorker {
   }
 
   private void updateAttempt(OperationStep step, int index, Observation evidence, String state) {
-    store.sql.update(
-        "update t_flink_managed_operation_step set state=?,"
-            + "request_id=coalesce(?,request_id),result=?,error_code=?,finished_at=? "
-            + "where operation_id=? and step_index=?",
-        state,
-        safe(evidence.getRequestId(), 128),
-        store.encode(evidence),
-        safe(evidence.getCode(), 64),
-        "WAITING_PROVIDER".equals(state) ? null : System.currentTimeMillis(),
-        step.getOperationId(),
-        index);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_operation_step set state=?,"
+                + "request_id=coalesce(?,request_id),result=?,error_code=?,finished_at=? "
+                + "where operation_id=? and step_index=?",
+            state,
+            safe(evidence.getRequestId(), 128),
+            store.encode(evidence),
+            safe(evidence.getCode(), 64),
+            "WAITING_PROVIDER".equals(state) ? null : System.currentTimeMillis(),
+            step.getOperationId(),
+            index);
   }
 
   private void finish(Map<String, Object> op, String status) {
     String operation = text(op, "id");
-    store.sql.update(
-        "update t_flink_managed_operation set status=?,lease_owner=null,lease_until=null,"
-            + "updated_at=? where id=?",
-        status,
-        System.currentTimeMillis(),
-        operation);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_operation set status=?,lease_owner=null,lease_until=null,"
+                + "updated_at=? where id=?",
+            status,
+            System.currentTimeMillis(),
+            operation);
     if (!"VERIFY_REQUIRED".equals(status)) {
-      store.sql.update(
-          "update t_flink_managed_job set pending_operation_id=null "
-              + "where app_id=? and pending_operation_id=?",
-          op.get("app_id"),
-          operation);
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_job set pending_operation_id=null "
+                  + "where app_id=? and pending_operation_id=?",
+              op.get("app_id"),
+              operation);
     }
     if (!"SUCCEEDED".equals(status)
         && ("PUBLISH".equals(text(op, "command_type"))
             || "ROLLBACK".equals(text(op, "command_type")))) {
-      store.sql.update(
-          "update t_flink_managed_release set status=? where id=? and status<>'PUBLISHED'",
-          status,
-          op.get("release_id"));
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_release set status=? where id=? and status<>'PUBLISHED'",
+              status,
+              op.get("release_id"));
     }
   }
 
   private void defer(String operation) {
     long now = System.currentTimeMillis();
-    store.sql.update(
-        "update t_flink_managed_operation set status='WAITING_PROVIDER',"
-            + "lease_owner=null,lease_until=null,next_run_at=?,updated_at=? where id=?",
-        now + 2000,
-        now,
-        operation);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_operation set status='WAITING_PROVIDER',"
+                + "lease_owner=null,lease_until=null,next_run_at=?,updated_at=? where id=?",
+            now + 2000,
+            now,
+            operation);
   }
 
   private boolean hasId(String value, int max) {

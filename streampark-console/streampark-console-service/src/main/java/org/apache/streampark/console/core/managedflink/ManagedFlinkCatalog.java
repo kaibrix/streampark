@@ -93,12 +93,14 @@ public class ManagedFlinkCatalog {
 
   public List<Map<String, Object>> connections(long team, int offset) {
     authorize(team, "team:update");
-    return store.sql.queryForList(
-        "select id, name, provider, account_ref as \"accountRef\", "
-            + "credential_version as \"credentialVersion\" from t_flink_cloud_connection "
-            + "where team_id=? order by name, id limit 100 offset ?",
-        team,
-        offset);
+    return store
+        .jdbc()
+        .queryForList(
+            "select id, name, provider, account_ref as \"accountRef\", "
+                + "credential_version as \"credentialVersion\" from t_flink_cloud_connection "
+                + "where team_id=? order by name, id limit 100 offset ?",
+            team,
+            offset);
   }
 
   public String createConnection(long team, ConnectionInput input) {
@@ -108,18 +110,20 @@ public class ManagedFlinkCatalog {
     String connection = id();
     String account = required(input.getAccountRef(), 128);
     String secret = seal(team, connection, account, provider, input);
-    store.sql.update(
-        "insert into t_flink_cloud_connection "
-            + "(id, team_id, name, provider, account_ref, credential, created_by, created_at) "
-            + "values (?,?,?,?,?,?,?,?)",
-        connection,
-        team,
-        required(input.getName(), 128),
-        provider,
-        account,
-        secret,
-        actor,
-        System.currentTimeMillis());
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_cloud_connection "
+                + "(id, team_id, name, provider, account_ref, credential, created_by, created_at) "
+                + "values (?,?,?,?,?,?,?,?)",
+            connection,
+            team,
+            required(input.getName(), 128),
+            provider,
+            account,
+            secret,
+            actor,
+            System.currentTimeMillis());
     return connection;
   }
 
@@ -127,11 +131,13 @@ public class ManagedFlinkCatalog {
   public void renameConnection(long team, String id, ConnectionInput input) {
     authorize(team, "team:update");
     connection(team, id);
-    store.sql.update(
-        "update t_flink_cloud_connection set name=? where team_id=? and id=?",
-        required(input.getName(), 128),
-        team,
-        id);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_cloud_connection set name=? where team_id=? and id=?",
+            required(input.getName(), 128),
+            team,
+            id);
   }
 
   public Map<String, String> probe(long team, String env) {
@@ -166,26 +172,30 @@ public class ManagedFlinkCatalog {
         "Cloud identity could not be confirmed");
     String sealed = credentials.seal(binding(team, id, account), candidate);
     int result =
-        store.sql.update(
-            "update t_flink_cloud_connection set credential=?, "
-                + "credential_version=credential_version+1 where team_id=? and id=? and credential_version=?",
-            sealed,
-            team,
-            id,
-            number(connection, "credential_version"));
+        store
+            .jdbc()
+            .update(
+                "update t_flink_cloud_connection set credential=?, "
+                    + "credential_version=credential_version+1 where team_id=? and id=? and credential_version=?",
+                sealed,
+                team,
+                id,
+                number(connection, "credential_version"));
     check(result == 1, HttpStatus.CONFLICT, "Cloud credentials changed");
     return report;
   }
 
   public List<Map<String, Object>> environments(long team, int offset) {
     authorize(team, "app:view");
-    return store.sql.queryForList(
-        "select e.id,e.name,e.region,e.enabled,e.target,"
-            + "e.connection_id as \"connectionId\", e.config_version as \"configVersion\", c.provider "
-            + "from t_flink_managed_env e join t_flink_cloud_connection c on c.id=e.connection_id "
-            + "and c.team_id=e.team_id where e.team_id=? order by e.name, e.id limit 100 offset ?",
-        team,
-        offset);
+    return store
+        .jdbc()
+        .queryForList(
+            "select e.id,e.name,e.region,e.enabled,e.target,"
+                + "e.connection_id as \"connectionId\", e.config_version as \"configVersion\", c.provider "
+                + "from t_flink_managed_env e join t_flink_cloud_connection c on c.id=e.connection_id "
+                + "and c.team_id=e.team_id where e.team_id=? order by e.name, e.id limit 100 offset ?",
+            team,
+            offset);
   }
 
   @Transactional
@@ -205,16 +215,18 @@ public class ManagedFlinkCatalog {
     boolean enabled = !Boolean.FALSE.equals(input.getEnabled());
     if (environmentId == null) {
       String created = id();
-      store.sql.update(
-          "insert into t_flink_managed_env "
-              + "(id,team_id,connection_id,name,region,target,enabled) values (?,?,?,?,?,?,?)",
-          created,
-          team,
-          connection.get("id"),
-          name,
-          region,
-          store.encode(target),
-          enabled);
+      store
+          .jdbc()
+          .update(
+              "insert into t_flink_managed_env "
+                  + "(id,team_id,connection_id,name,region,target,enabled) values (?,?,?,?,?,?,?)",
+              created,
+              team,
+              connection.get("id"),
+              name,
+              region,
+              store.encode(target),
+              enabled);
       return created;
     }
     Map<String, Object> old = environment(team, environmentId, true);
@@ -228,14 +240,16 @@ public class ManagedFlinkCatalog {
             && Objects.equals(target.getProjectId(), target(old).getProjectId()),
         HttpStatus.CONFLICT,
         "Create a new environment to change cloud scope");
-    store.sql.update(
-        "update t_flink_managed_env set name=?,target=?,enabled=?,"
-            + "config_version=config_version+1 where team_id=? and id=?",
-        name,
-        store.encode(target),
-        enabled,
-        team,
-        environmentId);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_env set name=?,target=?,enabled=?,"
+                + "config_version=config_version+1 where team_id=? and id=?",
+            name,
+            store.encode(target),
+            enabled,
+            team,
+            environmentId);
     return environmentId;
   }
 

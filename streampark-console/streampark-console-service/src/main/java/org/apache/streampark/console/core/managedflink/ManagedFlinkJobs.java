@@ -101,16 +101,18 @@ public class ManagedFlinkJobs {
     app.setCreateTime(new Date());
     app.setModifyTime(app.getCreateTime());
     check(applications.save(app), HttpStatus.INTERNAL_SERVER_ERROR, "Unable to create job");
-    store.sql.update(
-        "insert into t_flink_managed_job "
-            + "(app_id,team_id,environment_id,engine_ref,draft_revision,draft_spec,scope_key) "
-            + "values (?,?,?,?,1,?,?)",
-        app.getId(),
-        team,
-        env.get("id"),
-        catalog.target(env).getEngineRef(),
-        store.encode(input.getSpec()),
-        catalog.scope(conn, env));
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_job "
+                + "(app_id,team_id,environment_id,engine_ref,draft_revision,draft_spec,scope_key) "
+                + "values (?,?,?,?,1,?,?)",
+            app.getId(),
+            team,
+            env.get("id"),
+            catalog.target(env).getEngineRef(),
+            store.encode(input.getSpec()),
+            catalog.scope(conn, env));
     return app.getId();
   }
 
@@ -134,12 +136,14 @@ public class ManagedFlinkJobs {
     if (spec.getArtifactId() != null) {
       artifact(app, spec.getArtifactId());
     }
-    store.sql.update(
-        "update t_flink_managed_job set draft_spec=?,draft_revision=draft_revision+1 "
-            + "where app_id=?",
-        store.encode(spec),
-        app);
-    store.sql.update("update t_flink_app set modify_time=? where id=?", new Date(), app);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_job set draft_spec=?,draft_revision=draft_revision+1 "
+                + "where app_id=?",
+            store.encode(spec),
+            app);
+    store.jdbc().update("update t_flink_app set modify_time=? where id=?", new Date(), app);
   }
 
   public Map<String, Object> detail(long team, long app) {
@@ -216,25 +220,29 @@ public class ManagedFlinkJobs {
     }
     String operation = id();
     long now = System.currentTimeMillis();
-    store.sql.update(
-        "insert into t_flink_managed_operation (id,app_id,team_id,idempotency_key,"
-            + "request_hash,command_type,command,release_id,status,deadline_at,next_run_at,created_by,"
-            + "created_at,updated_at) values (?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?)",
-        operation,
-        app,
-        team,
-        key,
-        requestHash,
-        type.name(),
-        store.encode(frozen),
-        release,
-        now + 5 * 60_000,
-        now,
-        actor,
-        now,
-        now);
-    store.sql.update(
-        "update t_flink_managed_job set pending_operation_id=? where app_id=?", operation, app);
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_operation (id,app_id,team_id,idempotency_key,"
+                + "request_hash,command_type,command,release_id,status,deadline_at,next_run_at,created_by,"
+                + "created_at,updated_at) values (?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?)",
+            operation,
+            app,
+            team,
+            key,
+            requestHash,
+            type.name(),
+            store.encode(frozen),
+            release,
+            now + 5 * 60_000,
+            now,
+            actor,
+            now,
+            now);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_job set pending_operation_id=? where app_id=?", operation, app);
     return operation;
   }
 
@@ -295,23 +303,27 @@ public class ManagedFlinkJobs {
         provider.publishSteps(spec.getType(), text(job, "provider_draft_id") != null));
     String release = id();
     Long next =
-        store.sql.queryForObject(
-            "select coalesce(max(release_no),0)+1 from t_flink_managed_release where app_id=?",
-            Long.class,
-            app);
-    store.sql.update(
-        "insert into t_flink_managed_release "
-            + "(id,app_id,release_no,draft_revision,config_version,spec,spec_hash,target,status,created_at) "
-            + "values (?,?,?,?,?,?,?,?,'PENDING',?)",
-        release,
-        app,
-        next,
-        revision,
-        number(env, "config_version"),
-        encoded,
-        frozen.getSpecHash(),
-        store.encode(frozen.getTarget()),
-        System.currentTimeMillis());
+        store
+            .jdbc()
+            .queryForObject(
+                "select coalesce(max(release_no),0)+1 from t_flink_managed_release where app_id=?",
+                Long.class,
+                app);
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_release "
+                + "(id,app_id,release_no,draft_revision,config_version,spec,spec_hash,target,status,created_at) "
+                + "values (?,?,?,?,?,?,?,?,'PENDING',?)",
+            release,
+            app,
+            next,
+            revision,
+            number(env, "config_version"),
+            encoded,
+            frozen.getSpecHash(),
+            store.encode(frozen.getTarget()),
+            System.currentTimeMillis());
     return release;
   }
 
@@ -420,7 +432,7 @@ public class ManagedFlinkJobs {
             && !"DRIFTED".equals(text(job, "sync_status")),
         HttpStatus.CONFLICT,
         "Job must be stopped and reconciled");
-    store.sql.update("update t_flink_managed_job set archived=true where app_id=?", app);
+    store.jdbc().update("update t_flink_managed_job set archived=true where app_id=?", app);
   }
 
   Map<String, Object> job(long team, long app, boolean lock) {

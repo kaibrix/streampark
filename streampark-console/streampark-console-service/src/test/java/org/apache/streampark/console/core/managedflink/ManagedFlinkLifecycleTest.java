@@ -37,6 +37,7 @@ import org.apache.streampark.console.system.service.MemberService;
 import org.apache.streampark.console.system.service.UserService;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -305,7 +306,9 @@ class ManagedFlinkLifecycleTest {
       sql = new JdbcTemplate(dataSource);
       DataSourceTransactionManager manager = new DataSourceTransactionManager(dataSource);
       tx = new TransactionTemplate(manager);
-      store = new ManagedFlinkStore(sql);
+      ProxyFactory repository = new ProxyFactory(new ManagedFlinkStore(sql));
+      repository.setProxyTargetClass(true);
+      store = (ManagedFlinkStore) repository.getProxy();
       User admin = new User();
       admin.setUserId(100000L);
       admin.setUserType(UserType.ADMIN);

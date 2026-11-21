@@ -209,12 +209,14 @@ public class ManagedFlinkController {
       @RequestParam(defaultValue = "0") int offset) {
     requireRead(teamId, appId);
     return ok(
-        store.sql.queryForList(
-            "select id, release_no, draft_revision, config_version, "
-                + "spec_hash, provider_version, status, created_at from t_flink_managed_release "
-                + "where app_id=? order by release_no desc limit 100 offset ?",
-            appId,
-            offset(offset)));
+        store
+            .jdbc()
+            .queryForList(
+                "select id, release_no, draft_revision, config_version, "
+                    + "spec_hash, provider_version, status, created_at from t_flink_managed_release "
+                    + "where app_id=? order by release_no desc limit 100 offset ?",
+                appId,
+                offset(offset)));
   }
 
   @GetMapping("/apps/{appId}/releases/{id}")
@@ -242,11 +244,13 @@ public class ManagedFlinkController {
       @RequestParam(defaultValue = "0") int offset) {
     requireRead(teamId, appId);
     return ok(
-        store.sql.queryForList(
-            "select * from t_flink_managed_run where app_id=? "
-                + "order by started_at desc,id desc limit 100 offset ?",
-            appId,
-            offset(offset)));
+        store
+            .jdbc()
+            .queryForList(
+                "select * from t_flink_managed_run where app_id=? "
+                    + "order by started_at desc,id desc limit 100 offset ?",
+                appId,
+                offset(offset)));
   }
 
   @GetMapping("/apps/{appId}/runs/{id}")
@@ -275,11 +279,13 @@ public class ManagedFlinkController {
       @RequestParam(defaultValue = "0") int offset) {
     requireRead(teamId, appId);
     return ok(
-        store.sql.queryForList(
-            "select id,run_id,release_id,state,restorable,created_at,observed_at "
-                + "from t_flink_managed_snapshot where app_id=? order by created_at desc,id desc limit 100 offset ?",
-            appId,
-            offset(offset)));
+        store
+            .jdbc()
+            .queryForList(
+                "select id,run_id,release_id,state,restorable,created_at,observed_at "
+                    + "from t_flink_managed_snapshot where app_id=? order by created_at desc,id desc limit 100 offset ?",
+                appId,
+                offset(offset)));
   }
 
   @GetMapping("/apps/{appId}/restore-options")
@@ -290,12 +296,14 @@ public class ManagedFlinkController {
     options.put("releaseId", job.get("active_release_id"));
     options.put(
         "snapshots",
-        store.sql.queryForList(
-            "select id,run_id,release_id,created_at "
-                + "from t_flink_managed_snapshot where app_id=? and release_id=? and restorable=true "
-                + "and state='AVAILABLE' order by created_at desc,id desc limit 100",
-            appId,
-            job.get("active_release_id")));
+        store
+            .jdbc()
+            .queryForList(
+                "select id,run_id,release_id,created_at "
+                    + "from t_flink_managed_snapshot where app_id=? and release_id=? and restorable=true "
+                    + "and state='AVAILABLE' order by created_at desc,id desc limit 100",
+                appId,
+                job.get("active_release_id")));
     return ok(options);
   }
 
@@ -326,13 +334,15 @@ public class ManagedFlinkController {
       @RequestParam(defaultValue = "0") int offset) {
     requireRead(teamId, appId);
     return ok(
-        store.sql.queryForList(
-            "select id,command_type,status,step_index,created_at,updated_at "
-                + "from t_flink_managed_operation where team_id=? and app_id=? "
-                + "order by created_at desc,id desc limit 100 offset ?",
-            teamId,
-            appId,
-            offset(offset)));
+        store
+            .jdbc()
+            .queryForList(
+                "select id,command_type,status,step_index,created_at,updated_at "
+                    + "from t_flink_managed_operation where team_id=? and app_id=? "
+                    + "order by created_at desc,id desc limit 100 offset ?",
+                teamId,
+                appId,
+                offset(offset)));
   }
 
   @GetMapping("/apps/{appId}/operations/{id}")
@@ -351,11 +361,13 @@ public class ManagedFlinkController {
             "created_by");
     operation.put(
         "steps",
-        store.sql.queryForList(
-            "select step_index,action,state,request_id,error_code,"
-                + "started_at,finished_at from t_flink_managed_operation_step "
-                + "where operation_id=? order by step_index",
-            id));
+        store
+            .jdbc()
+            .queryForList(
+                "select step_index,action,state,request_id,error_code,"
+                    + "started_at,finished_at from t_flink_managed_operation_step "
+                    + "where operation_id=? order by step_index",
+                id));
     return ok(operation);
   }
 
@@ -368,19 +380,21 @@ public class ManagedFlinkController {
     long now = System.currentTimeMillis();
     // An existing attempt is required to guarantee that reconciliation takes the read branch.
     int count =
-        store.sql.update(
-            "update t_flink_managed_operation set status='WAITING_PROVIDER',"
-                + "deadline_at=?,next_run_at=?,updated_at=? where id=? and team_id=? and app_id=? "
-                + "and status='VERIFY_REQUIRED' and exists (select 1 from t_flink_managed_operation_step "
-                + "where operation_id=? and step_index=?)",
-            now + 300_000,
-            now,
-            now,
-            id,
-            teamId,
-            appId,
-            id,
-            row.get("step_index"));
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_operation set status='WAITING_PROVIDER',"
+                    + "deadline_at=?,next_run_at=?,updated_at=? where id=? and team_id=? and app_id=? "
+                    + "and status='VERIFY_REQUIRED' and exists (select 1 from t_flink_managed_operation_step "
+                    + "where operation_id=? and step_index=?)",
+                now + 300_000,
+                now,
+                now,
+                id,
+                teamId,
+                appId,
+                id,
+                row.get("step_index"));
     check(count == 1, HttpStatus.CONFLICT, "No dispatched step available for reconciliation");
     return ok(null);
   }

@@ -57,19 +57,23 @@ class ManagedFlinkReconciler {
   void refresh() {
     long now = System.currentTimeMillis();
     for (Map<String, Object> job :
-        store.sql.queryForList(
-            "select * from t_flink_managed_job where provider_job_id is not null and archived=false "
-                + "and pending_operation_id is null and next_observe_at<=? order by next_observe_at,app_id limit 16",
-            now)) {
+        store
+            .jdbc()
+            .queryForList(
+                "select * from t_flink_managed_job where provider_job_id is not null and archived=false "
+                    + "and pending_operation_id is null and next_observe_at<=? order by next_observe_at,app_id limit 16",
+                now)) {
       long app = number(job, "app_id");
       long team = number(job, "team_id");
       long next = now + 30_000;
-      if (store.sql.update(
-              "update t_flink_managed_job set next_observe_at=? "
-                  + "where app_id=? and next_observe_at=? and pending_operation_id is null",
-              next,
-              app,
-              number(job, "next_observe_at"))
+      if (store
+              .jdbc()
+              .update(
+                  "update t_flink_managed_job set next_observe_at=? "
+                      + "where app_id=? and next_observe_at=? and pending_operation_id is null",
+                  next,
+                  app,
+                  number(job, "next_observe_at"))
           == 0) {
         continue;
       }
@@ -117,11 +121,13 @@ class ManagedFlinkReconciler {
       if (Arrays.asList("MISSING", "DRIFTED").contains(text(job, "sync_status"))) {
         status = text(job, "sync_status");
       }
-      store.sql.update(
-          "update t_flink_managed_job set sync_status=?,missing_reads=? where app_id=?",
-          status,
-          missing,
-          app);
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_job set sync_status=?,missing_reads=? where app_id=?",
+              status,
+              missing,
+              app);
       return;
     }
     if (olderInstance(job, state)) {
@@ -139,12 +145,14 @@ class ManagedFlinkReconciler {
     if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
       return;
     }
-    store.sql.update(
-        "update t_flink_managed_job set sync_status=?,observed_at=?,missing_reads=0 "
-            + "where app_id=?",
-        match ? "FRESH" : "DRIFTED",
-        now,
-        app);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_job set sync_status=?,observed_at=?,missing_reads=0 "
+                + "where app_id=?",
+            match ? "FRESH" : "DRIFTED",
+            now,
+            app);
     if (state.getInstanceId() != null && !state.getInstanceId().trim().isEmpty()) {
       projectRun(app, state, now);
     }
@@ -202,32 +210,36 @@ class ManagedFlinkReconciler {
     String run = row == null ? id() : text(row, "id");
     if (row == null) {
       // Job head revision is insufficient evidence for the version of an external instance.
-      store.sql.update(
-          "insert into t_flink_managed_run (id,app_id,provider_instance_id,"
-              + "runtime_application_id,run_state,raw_state,origin,started_at,ended_at,observed_at) "
-              + "values (?,?,?,?,?,?,'EXTERNAL',?,?,?)",
-          run,
-          app,
-          instance,
-          state.getRuntimeId(),
-          runState,
-          state.getRunState(),
-          started,
-          endedAt,
-          now);
+      store
+          .jdbc()
+          .update(
+              "insert into t_flink_managed_run (id,app_id,provider_instance_id,"
+                  + "runtime_application_id,run_state,raw_state,origin,started_at,ended_at,observed_at) "
+                  + "values (?,?,?,?,?,?,'EXTERNAL',?,?,?)",
+              run,
+              app,
+              instance,
+              state.getRuntimeId(),
+              runState,
+              state.getRunState(),
+              started,
+              endedAt,
+              now);
     } else if (row.get("ended_at") == null) {
-      store.sql.update(
-          "update t_flink_managed_run set run_state=?,raw_state=?,ended_at=?,"
-              + "observed_at=? where id=?",
-          runState,
-          state.getRunState(),
-          endedAt,
-          now,
-          run);
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_run set run_state=?,raw_state=?,ended_at=?,"
+                  + "observed_at=? where id=?",
+              runState,
+              state.getRunState(),
+              endedAt,
+              now,
+              run);
     } else {
       return;
     }
-    store.sql.update("update t_flink_managed_job set current_run_id=? where app_id=?", run, app);
+    store.jdbc().update("update t_flink_managed_job set current_run_id=? where app_id=?", run, app);
     FlinkAppState projection;
     switch (runState) {
       case "RUNNING":
@@ -245,11 +257,13 @@ class ManagedFlinkReconciler {
       default:
         return;
     }
-    store.sql.update(
-        "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
-        projection.getValue(),
-        new Date(started),
-        ended ? new Date(now) : null,
-        app);
+    store
+        .jdbc()
+        .update(
+            "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
+            projection.getValue(),
+            new Date(started),
+            ended ? new Date(now) : null,
+            app);
   }
 }

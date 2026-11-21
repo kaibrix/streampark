@@ -36,7 +36,7 @@ import java.util.UUID;
 @Repository
 class ManagedFlinkStore {
 
-  final JdbcTemplate sql;
+  private final JdbcTemplate sql;
 
   private final ObjectMapper json =
       new ObjectMapper()
@@ -45,6 +45,10 @@ class ManagedFlinkStore {
 
   ManagedFlinkStore(JdbcTemplate sql) {
     this.sql = sql;
+  }
+
+  JdbcTemplate jdbc() {
+    return sql;
   }
 
   Map<String, Object> find(String query, Object... parameters) {

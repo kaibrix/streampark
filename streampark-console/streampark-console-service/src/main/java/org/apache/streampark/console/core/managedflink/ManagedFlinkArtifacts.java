@@ -170,16 +170,18 @@ class ManagedFlinkArtifacts {
       }
       String id = id();
       try {
-        store.sql.update(
-            "insert into t_flink_managed_artifact "
-                + "(id,app_id,digest,size_bytes,object_ref,main_class,created_at) values (?,?,?,?,?,?,?)",
-            id,
-            app,
-            sha,
-            total,
-            artifact.toString(),
-            mainClass,
-            System.currentTimeMillis());
+        store
+            .jdbc()
+            .update(
+                "insert into t_flink_managed_artifact "
+                    + "(id,app_id,digest,size_bytes,object_ref,main_class,created_at) values (?,?,?,?,?,?,?)",
+                id,
+                app,
+                sha,
+                total,
+                artifact.toString(),
+                mainClass,
+                System.currentTimeMillis());
       } catch (DuplicateKeyException e) {
         return text(
             store.require(
