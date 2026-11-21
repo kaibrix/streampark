@@ -30,6 +30,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -42,6 +43,7 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 @ConditionalOnProperty(name = "streampark.managed-flink.enabled", havingValue = "true")
 class ManagedFlinkReconciler {
 
+  private static final List<String> TERMINAL = Arrays.asList("STOPPED", "FAILED", "FINISHED");
   private final ManagedFlinkStore store;
   private final ManagedFlinkCatalog catalog;
   private final TransactionTemplate tx;
@@ -130,7 +132,17 @@ class ManagedFlinkReconciler {
               app);
       return;
     }
+    if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
+      return;
+    }
     if (olderInstance(job, state)) {
+      if (!TERMINAL.contains(state.getRunState())
+          && !Arrays.asList("MISSING", "DRIFTED").contains(text(job, "sync_status"))) {
+        // Do not replace newer history or report it as fresh when an older run appears active.
+        store
+            .jdbc()
+            .update("update t_flink_managed_job set sync_status='STALE' where app_id=?", app);
+      }
       return;
     }
     Map<String, Object> release =
@@ -142,9 +154,6 @@ class ManagedFlinkReconciler {
         release != null
             && state.getVersion() != null
             && Objects.equals(state.getVersion(), text(release, "provider_version"));
-    if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
-      return;
-    }
     store
         .jdbc()
         .update(
@@ -198,7 +207,7 @@ class ManagedFlinkReconciler {
                 .contains(state.getRunState())
             ? state.getRunState()
             : "UNKNOWN";
-    boolean ended = Arrays.asList("STOPPED", "FAILED", "FINISHED").contains(runState);
+    boolean ended = TERMINAL.contains(runState);
     Long endedAt = ended ? now : null;
     Map<String, Object> row =
         store.find(

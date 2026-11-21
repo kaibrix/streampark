@@ -465,6 +465,53 @@ class ManagedFlinkLifecycleTest {
         .matches(error -> error.getStatus().value() == 409);
   }
 
+  @Test
+  void olderActiveInstanceDoesNotSilentlyReplaceNewerRecordedHistory() {
+    MockManagedFlinkProvider provider = new MockManagedFlinkProvider();
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String version =
+        test.sql.queryForObject(
+            "select provider_version from t_flink_managed_release", String.class);
+    CloudState latest =
+        new CloudState(ReadStatus.FOUND, job, version, "newest", "runtime-newest", "STOPPED", 2000);
+    provider.recordState(latest);
+    test.reconciler.refresh();
+    String current = test.jobField("current_run_id");
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(
+            ReadStatus.FOUND, "other-job", version, "older", "runtime-older", "RUNNING", 1000),
+        System.currentTimeMillis());
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+
+    provider.recordState(
+        new CloudState(ReadStatus.FOUND, job, version, "older", "runtime-older", "STOPPED", 1000));
+    test.sql.update("update t_flink_managed_job set next_observe_at=0");
+    test.reconciler.refresh();
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+
+    provider.recordState(
+        new CloudState(ReadStatus.FOUND, job, version, "older", "runtime-older", "RUNNING", 1000));
+    test.sql.update("update t_flink_managed_job set next_observe_at=0");
+    test.reconciler.refresh();
+    assertThat(test.jobField("sync_status")).isEqualTo("STALE");
+    assertThat(test.jobField("current_run_id")).isEqualTo(current);
+    assertThat(
+            test.sql.queryForObject(
+                "select provider_instance_id from t_flink_managed_run", String.class))
+        .isEqualTo("newest");
+
+    provider.recordState(latest);
+    test.sql.update("update t_flink_managed_job set next_observe_at=0");
+    test.reconciler.refresh();
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+    assertThat(test.jobField("current_run_id")).isEqualTo(current);
+  }
+
   static final class Fixture {
     final JdbcTemplate sql;
     final TransactionTemplate tx;

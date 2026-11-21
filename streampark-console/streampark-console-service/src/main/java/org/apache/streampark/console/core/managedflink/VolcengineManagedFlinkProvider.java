@@ -46,10 +46,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
@@ -65,6 +68,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   private static final List<String> ENGINES =
       Arrays.asList("FLINK_VERSION_1_16", "FLINK_VERSION_1_17", "FLINK_VERSION_1_20");
   private static final List<String> TERMINAL = Arrays.asList("STOPPED", "FINISHED", "FAILED");
+  private static final int INSTANCE_PAGE_SIZE = 50;
+  private static final int MAX_INSTANCE_PAGES = 20;
+  private static final long INSTANCE_SCAN_BUDGET = TimeUnit.SECONDS.toNanos(15);
   private static final DateTimeFormatter CLOUD_TIME =
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
   private static final List<String> FEATURES =
@@ -237,24 +243,15 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       if (application == null) {
         return readFailure(jobId, ReadStatus.STALE);
       }
-      Reply response = instances(api, target, jobId);
-      JsonElement records = response.data().get("Records");
-      if (!response.ok()
-          || records == null
-          || !records.isJsonArray()
-          || !"1".equals(text(response.data(), "Current"))) {
-        return readFailure(jobId, ReadStatus.STALE);
-      }
-      List<JsonObject> runs = rows(records);
-      if (records.getAsJsonArray().size() != runs.size()
-          || safeNumber(text(response.data(), "Total")) != runs.size()) {
+      List<JsonObject> runs = instanceHistory(api, target, jobId);
+      if (runs == null) {
         return readFailure(jobId, ReadStatus.STALE);
       }
       List<JsonObject> live =
           runs.stream()
               .filter(run -> !TERMINAL.contains(text(run, "State")))
               .collect(Collectors.toList());
-      if (live.size() > 1 || runs.stream().anyMatch(run -> !isInstance(run, target, jobId))) {
+      if (live.size() > 1) {
         return readFailure(jobId, ReadStatus.STALE);
       }
       JsonObject current =
@@ -837,7 +834,88 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         : null;
   }
 
-  private Reply instances(VolcengineOpenApi api, Target target, String job) throws IOException {
+  private List<JsonObject> instanceHistory(VolcengineOpenApi api, Target target, String job)
+      throws IOException {
+    long deadline = System.nanoTime() + INSTANCE_SCAN_BUDGET;
+    Reply firstReply = instances(api, target, job, 1);
+    long total = safeNumber(text(firstReply.data(), "Total"));
+    if (total < 0 || total > (long) INSTANCE_PAGE_SIZE * MAX_INSTANCE_PAGES) {
+      return null;
+    }
+    List<JsonObject> first = instancePage(firstReply, target, job, 1, total);
+    if (System.nanoTime() - deadline >= 0) {
+      return null;
+    }
+    if (first == null || total <= INSTANCE_PAGE_SIZE) {
+      return first;
+    }
+    List<JsonObject> history = new ArrayList<>(first);
+    Set<String> ids = first.stream().map(row -> text(row, "Id")).collect(Collectors.toSet());
+    for (int page = 2; history.size() < total; page++) {
+      if (System.nanoTime() - deadline >= 0) {
+        return null;
+      }
+      List<JsonObject> next =
+          instancePage(instances(api, target, job, page), target, job, page, total);
+      if (next == null || next.stream().anyMatch(row -> !ids.add(text(row, "Id")))) {
+        return null;
+      }
+      history.addAll(next);
+    }
+
+    // Offset pagination has no snapshot token. Reject a new or changed head during the scan.
+    if (System.nanoTime() - deadline >= 0) {
+      return null;
+    }
+    List<JsonObject> head = instancePage(instances(api, target, job, 1), target, job, 1, total);
+    return System.nanoTime() - deadline < 0
+            && head != null
+            && readbackKeys(first).equals(readbackKeys(head))
+        ? history
+        : null;
+  }
+
+  private List<JsonObject> instancePage(
+      Reply reply, Target target, String job, int page, long total) {
+    JsonObject data = reply.data();
+    JsonElement records = data.get("Records");
+    long expected = Math.min(INSTANCE_PAGE_SIZE, total - (long) (page - 1) * INSTANCE_PAGE_SIZE);
+    if (!reply.ok()
+        || safeNumber(text(data, "Current")) != page
+        || safeNumber(text(data, "Size")) != INSTANCE_PAGE_SIZE
+        || safeNumber(text(data, "Total")) != total
+        || records == null
+        || !records.isJsonArray()
+        || records.getAsJsonArray().size() != expected) {
+      return null;
+    }
+    List<JsonObject> result = rows(records);
+    Set<String> ids = new HashSet<>();
+    return result.size() == expected
+            && result.stream()
+                .allMatch(
+                    row ->
+                        isInstance(row, target, job)
+                            && !text(row, "Id").isBlank()
+                            && ids.add(text(row, "Id")))
+        ? result
+        : null;
+  }
+
+  private List<List<String>> readbackKeys(List<JsonObject> instances) {
+    return instances.stream()
+        .map(
+            row ->
+                Arrays.asList(
+                    text(row, "Id"),
+                    text(row, "State"),
+                    text(row, "StartTime"),
+                    text(row, "ApplicationId")))
+        .collect(Collectors.toList());
+  }
+
+  private Reply instances(VolcengineOpenApi api, Target target, String job, int page)
+      throws IOException {
     return api.call(
         "ListApplicationInstance",
         FLINK_VERSION,
@@ -848,9 +926,13 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             "JobId",
             Long.parseLong(job),
             "PageNum",
-            "1",
+            Integer.toString(page),
             "PageSize",
-            "50"));
+            Integer.toString(INSTANCE_PAGE_SIZE),
+            "SortField",
+            "StartTime",
+            "SortOrder",
+            "desc"));
   }
 
   private Reply listJobs(VolcengineOpenApi api, Target target, String name) throws IOException {
