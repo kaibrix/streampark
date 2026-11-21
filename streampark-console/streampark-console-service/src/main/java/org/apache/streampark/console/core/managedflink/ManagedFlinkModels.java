@@ -291,6 +291,9 @@ public final class ManagedFlinkModels {
     private String artifactRef;
     private String restoredFrom;
 
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private long retryNotBefore;
+
     public static Observation outcome(Outcome outcome, String code) {
       Observation result = new Observation();
       result.setOutcome(outcome);

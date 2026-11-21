@@ -221,7 +221,7 @@ class ManagedFlinkWorker {
                 updateAttempt(step, index, ack, "FAILED");
                 finish(op, "FAILED");
               } else {
-                defer(operation);
+                defer(op, ack.getRetryNotBefore());
               }
             }
           });
@@ -462,7 +462,7 @@ class ManagedFlinkWorker {
               safe(evidence.getCode(), 64),
               step.getOperationId(),
               index);
-      defer(step.getOperationId());
+      defer(op, evidence.getRetryNotBefore());
       return;
     }
     if (step.getAction() == Action.START && "FAILED".equals(evidence.getRunState())) {
@@ -482,7 +482,7 @@ class ManagedFlinkWorker {
           .update(
               "update t_flink_managed_operation set step_index=step_index+1 where id=?",
               step.getOperationId());
-      defer(step.getOperationId());
+      defer(op, 0);
     }
   }
 
@@ -697,16 +697,18 @@ class ManagedFlinkWorker {
     }
   }
 
-  private void defer(String operation) {
+  private void defer(Map<String, Object> op, long retryNotBefore) {
     long now = System.currentTimeMillis();
+    // A due operation at its deadline is fenced without another cloud read.
+    long next = Math.min(number(op, "deadline_at"), Math.max(now + 2_000, retryNotBefore));
     store
         .jdbc()
         .update(
             "update t_flink_managed_operation set status='WAITING_PROVIDER',"
                 + "lease_owner=null,lease_until=null,next_run_at=?,updated_at=? where id=?",
-            now + 2000,
+            next,
             now,
-            operation);
+            op.get("id"));
   }
 
   private boolean hasId(String value, int max) {

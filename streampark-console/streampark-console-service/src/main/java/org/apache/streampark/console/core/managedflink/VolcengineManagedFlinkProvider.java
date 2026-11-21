@@ -633,6 +633,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         default:
           return awaiting();
       }
+    } catch (ReadFailure failure) {
+      Observation result =
+          Observation.outcome(Outcome.WAITING, "VOLCENGINE_READ_" + failure.status);
+      long fallback = System.currentTimeMillis() + 15_000;
+      result.setRetryNotBefore(Math.max(fallback, failure.retryNotBefore));
+      return result;
     } catch (IOException | RuntimeException e) {
       return awaiting();
     }
@@ -696,6 +702,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   private List<JsonObject> savepoints(VolcengineOpenApi api, String job) throws IOException {
     Reply response =
         api.call("ListGWSSavepoint", FLINK_VERSION, Collections.emptyMap(), fields("Id", job));
+    response.checkReadBackoff();
     return response.ok() ? rows(response.data().get("SavepointInfos")) : Collections.emptyList();
   }
 
@@ -743,6 +750,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
     if (job == null) {
       Reply listing = listJobs(api, target, step.getCommand().getJobName());
+      listing.checkReadBackoff();
       List<JsonObject> records =
           rows(listing.data().get("Records")).stream()
               .filter(
@@ -835,6 +843,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             FLINK_VERSION,
             Collections.emptyMap(),
             fields("InstanceId", id));
+    reply.checkReadBackoff();
     return reply.ok() && same(reply.data(), "Id", id) && isInstance(reply.data(), target, job)
         ? reply.data()
         : null;
@@ -1091,6 +1100,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     if (!reply.ok() || "false".equals(text(reply.data(), "Success"))) {
       Observation unknown = Observation.outcome(Outcome.UNKNOWN, "VOLCENGINE_WRITE_UNCERTAIN");
       unknown.setRequestId(reply.requestId);
+      unknown.setRetryNotBefore(reply.retryNotBefore);
       return unknown;
     }
     Observation result = Observation.outcome(Outcome.WAITING, null);

@@ -201,6 +201,79 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void respectsProviderReadDelayWithoutLosingWriteEvidenceOrExtendingTheDeadline() {
+    AtomicInteger writes = new AtomicInteger();
+    AtomicInteger reads = new AtomicInteger();
+    long retry = System.currentTimeMillis() + 60_000;
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation dispatch(Context context, OperationStep step, BooleanSupplier permit) {
+            if (step.getAction() != Action.PUBLISH) {
+              return super.dispatch(context, step, permit);
+            }
+            assertThat(permit.getAsBoolean()).isTrue();
+            writes.incrementAndGet();
+            Observation ack = Observation.outcome(Outcome.UNKNOWN, "RESULT_UNCERTAIN");
+            ack.setRequestId("publish-ack");
+            ack.setJobId("candidate-job");
+            ack.setRetryNotBefore(retry);
+            return ack;
+          }
+
+          @Override
+          public Observation observe(Context context, OperationStep step, Observation previous) {
+            if (step.getAction() != Action.PUBLISH) {
+              return super.observe(context, step, previous);
+            }
+            reads.incrementAndGet();
+            assertThat(previous.getRequestId()).isEqualTo("publish-ack");
+            assertThat(previous.getJobId()).isEqualTo("candidate-job");
+            Observation result = Observation.outcome(Outcome.WAITING, "VOLCENGINE_READ_THROTTLED");
+            result.setRetryNotBefore(Long.MAX_VALUE);
+            return result;
+          }
+        };
+    Fixture test = new Fixture(provider);
+    try {
+      String operation = test.publish("retry-after", test.command());
+      test.reachPublish(operation);
+      test.first.advance(operation);
+      String schedule = "select next_run_at from t_flink_managed_operation where id=?";
+      assertThat(test.sql.queryForObject(schedule, Long.class, operation)).isEqualTo(retry);
+      test.second.advance(operation);
+      assertThat(reads).hasValue(0);
+
+      test.makeDue(operation);
+      test.second.advance(operation);
+      long deadline =
+          test.sql.queryForObject(
+              "select deadline_at from t_flink_managed_operation where id=?",
+              Long.class,
+              operation);
+      assertThat(test.sql.queryForObject(schedule, Long.class, operation)).isEqualTo(deadline);
+      assertThat(
+              test.sql.queryForObject(
+                  "select request_id from t_flink_managed_operation_step where operation_id=? and step_index=2",
+                  String.class,
+                  operation))
+          .isEqualTo("publish-ack");
+      test.first.advance(operation);
+      assertThat(reads).hasValue(1);
+      test.sql.update(
+          "update t_flink_managed_operation set next_run_at=0,deadline_at=0 where id=?", operation);
+      test.first.advance(operation);
+      assertThat(test.status(operation)).isEqualTo("VERIFY_REQUIRED");
+      assertThat(test.jobField("pending_operation_id")).isEqualTo(operation);
+      assertThat(writes).hasValue(1);
+      assertThat(reads).hasValue(1);
+    } finally {
+      test.first.stopRenewals();
+      test.second.stopRenewals();
+    }
+  }
+
+  @Test
   void unknownPublishKeepsFenceAndSameKey() {
     RecordingProvider provider = new RecordingProvider(false, false);
     Fixture test = new Fixture(provider);

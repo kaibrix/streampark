@@ -255,7 +255,7 @@ final class VolcengineOpenApi {
       if (httpStatus == 401 || httpStatus == 403) {
         throw new ReadFailure(ReadStatus.AUTH_ERROR, retryNotBefore);
       }
-      if (!ok() && retryNotBefore != 0) {
+      if (httpStatus == 503 || (!ok() && retryNotBefore != 0)) {
         throw new ReadFailure(ReadStatus.STALE, retryNotBefore);
       }
     }

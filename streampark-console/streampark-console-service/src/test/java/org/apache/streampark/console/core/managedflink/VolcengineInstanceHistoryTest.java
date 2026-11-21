@@ -17,8 +17,13 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
 
@@ -143,6 +148,22 @@ class VolcengineInstanceHistoryTest {
     CloudState stale = unavailable.inspect();
     assertThat(stale.getStatus()).isEqualTo(ReadStatus.STALE);
     assertThat(stale.getRetryNotBefore()).isEqualTo(2_139_722_880_000L);
+  }
+
+  @Test
+  void throttledStopReadbackWaitsForEvidence() {
+    Fixture fixture =
+        new Fixture(page -> history(1, 0, 0, 0), "GetApplicationInstance", 0, 429, "90");
+    FrozenCommand command = new FrozenCommand();
+    command.setProviderInstance("125");
+    OperationStep step = new OperationStep("stop-once", 1L, Action.STOP, command, null, "31", null);
+    long before = System.currentTimeMillis();
+    Observation evidence = fixture.provider.observe(fixture.context, step, null);
+
+    assertThat(evidence.getOutcome()).isEqualTo(Outcome.WAITING);
+    assertThat(evidence.getCode()).isEqualTo("VOLCENGINE_READ_THROTTLED");
+    assertThat(evidence.getRetryNotBefore())
+        .isBetween(before + 90_000, System.currentTimeMillis() + 90_000);
   }
 
   @Test
