@@ -24,6 +24,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobTyp
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQuery;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 
 import java.util.ArrayList;
@@ -31,6 +32,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 
 public interface ManagedFlinkProvider {
 
@@ -86,6 +88,16 @@ public interface ManagedFlinkProvider {
 
   /** Dispatches at most once. Even a confirmed acknowledgement is followed by an observation. */
   Observation dispatch(Context context, OperationStep step);
+
+  /**
+   * Requests permission once before dispatch. Implementations separating reads from writes should
+   * acquire it after the read checks, immediately before the write.
+   */
+  default Observation dispatch(Context context, OperationStep step, BooleanSupplier permit) {
+    return permit.getAsBoolean()
+        ? dispatch(context, step)
+        : Observation.outcome(Outcome.REJECTED, "DISPATCH_NOT_AUTHORIZED");
+  }
 
   /** Reads evidence for a specific step. An ambiguous observation must remain unresolved. */
   Observation observe(Context context, OperationStep step, Observation acknowledgement);

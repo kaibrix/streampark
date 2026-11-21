@@ -55,6 +55,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -126,6 +127,69 @@ class ManagedFlinkLifecycleTest {
       assertThat(test.sql.queryForObject(leaseSql, Long.class, operation)).isNull();
     } finally {
       provider.allowAck.countDown();
+      dispatch.shutdownNow();
+      test.first.stopRenewals();
+      test.second.stopRenewals();
+    }
+  }
+
+  @Test
+  void aReadThatOutlivesItsLeaseAndDeadlineCannotDispatch() throws Exception {
+    CountDownLatch reading = new CountDownLatch(1);
+    CountDownLatch completeRead = new CountDownLatch(1);
+    AtomicInteger starts = new AtomicInteger();
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation dispatch(Context context, OperationStep step, BooleanSupplier permit) {
+            if (step.getAction() == Action.START) {
+              reading.countDown();
+              try {
+                assertThat(completeRead.await(10, TimeUnit.SECONDS)).isTrue();
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+              }
+              if (!permit.getAsBoolean()) {
+                return Observation.outcome(Outcome.REJECTED, "DISPATCH_NOT_AUTHORIZED");
+              }
+              starts.incrementAndGet();
+              return dispatch(context, step);
+            }
+            return super.dispatch(context, step, permit);
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("published", test.command()));
+    Command start = new Command();
+    start.setExpectedReleaseId(test.jobField("active_release_id"));
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    restore.setConfirmedNew(true);
+    start.setRestore(restore);
+    String operation = test.enqueue(CommandType.START, "expired-read", start);
+
+    ExecutorService dispatch = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> oldWorker = dispatch.submit(() -> test.first.advance(operation));
+      assertThat(reading.await(10, TimeUnit.SECONDS)).isTrue();
+      test.sql.update(
+          "update t_flink_managed_operation set deadline_at=0,lease_until=0, next_run_at=0 where id=?",
+          operation);
+      test.second.advance(operation);
+      assertThat(test.status(operation)).isEqualTo("FAILED");
+      completeRead.countDown();
+      oldWorker.get(10, TimeUnit.SECONDS);
+      assertThat(starts).hasValue(0);
+      assertThat(test.jobField("pending_operation_id")).isNull();
+      assertThat(
+              test.sql.queryForObject(
+                  "select count(*) from t_flink_managed_operation_step where operation_id=?",
+                  Integer.class,
+                  operation))
+          .isZero();
+    } finally {
+      completeRead.countDown();
       dispatch.shutdownNow();
       test.first.stopRenewals();
       test.second.stopRenewals();

@@ -49,6 +49,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Collectors;
 
 import static org.apache.streampark.console.core.managedflink.VolcengineExecutable.revision;
@@ -313,6 +314,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   @Override
   public Observation dispatch(Context context, OperationStep step) {
+    return dispatch(context, step, () -> true);
+  }
+
+  @Override
+  public Observation dispatch(Context context, OperationStep step, BooleanSupplier permit) {
     if (!binding.permitsSqlWrites(context)) {
       return Observation.outcome(Outcome.REJECTED, "CAPABILITY_UNVERIFIED");
     }
@@ -326,20 +332,20 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       switch (step.getAction()) {
         case STAGE_ARTIFACT:
           return binding.permitsArtifacts(context)
-              ? artifacts.stage(context, step, true)
+              ? artifacts.stage(context, step, permit)
               : rejected("CAPABILITY_UNVERIFIED");
         case CREATE_DRAFT:
           if (!supportedSpec(context, step)) {
             return rejected("UNVERIFIED_SPEC");
           }
-          return ack(
-              api.call(
-                  "CreateGWSApplicationDraft",
-                  GWS_VERSION,
-                  scope(target),
-                  draftFields(step, target)),
-              "Id",
-              null);
+          JsonObject create = draftFields(step, target);
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call("CreateGWSApplicationDraft", GWS_VERSION, scope(target), create),
+                      "Id",
+                      null));
         case UPDATE_DRAFT:
           if (!supportedSpec(context, step)) {
             return rejected("UNVERIFIED_SPEC");
@@ -362,10 +368,13 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           update.addProperty("Id", step.getDraftId());
           update.addProperty("AppDraftId", step.getDraftId());
           VolcengineExecutable.writeDraft(update, step);
-          return ack(
-              api.call("UpdateGWSApplicationDraft", GWS_VERSION, scope(target), update),
-              "Id",
-              null);
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call("UpdateGWSApplicationDraft", GWS_VERSION, scope(target), update),
+                      "Id",
+                      null));
         case PUBLISH:
           if (!supportedSpec(context, step) || !matchesDraftForPublish(api, target, step)) {
             return rejected("DRAFT_NOT_VERIFIED");
@@ -381,50 +390,55 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           }
           Map<String, String> query = scope(target);
           query.put("Id", step.getDraftId());
-          return ack(
-              api.call(
-                  "DeployGWSApplicationDraft",
-                  GWS_VERSION,
-                  query,
-                  fields(
-                      "Queue",
-                      target.getResourcePoolId(),
-                      "ResourcePool",
-                      target.getResourcePoolName(),
-                      "Priority",
-                      "1",
-                      "SchedulePolicy",
-                      "GANG",
-                      "ScheduleTimeout",
-                      60)),
-              null,
-              "Id");
+          JsonObject deployment =
+              fields(
+                  "Queue",
+                  target.getResourcePoolId(),
+                  "ResourcePool",
+                  target.getResourcePoolName(),
+                  "Priority",
+                  "1",
+                  "SchedulePolicy",
+                  "GANG",
+                  "ScheduleTimeout",
+                  60);
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call("DeployGWSApplicationDraft", GWS_VERSION, query, deployment),
+                      null,
+                      "Id"));
         case START:
           if (VolcengineExecutable.artifact(step) != null) {
             if (!binding.permitsArtifacts(context)) {
               return rejected("CAPABILITY_UNVERIFIED");
             }
-            Observation verified = artifacts.stage(context, step, false);
+            Observation verified = artifacts.inspect(context, step);
             if (verified.getOutcome() != Outcome.CONFIRMED
                 || !Objects.equals(verified.getArtifactRef(), step.getCommand().getArtifactRef())) {
-              return rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
+              Observation failure = rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
+              failure.setRequestId(verified.getRequestId());
+              return failure;
             }
           }
           return supportedSpec(context, step)
-              ? start(api, target, step, binding.permitsSnapshots(context))
+              ? start(api, target, step, binding.permitsSnapshots(context), permit)
               : rejected("UNVERIFIED_SPEC");
         case SNAPSHOT:
           if (!binding.permitsSnapshots(context) || !isCurrentRunning(api, target, step)) {
             return rejected("SNAPSHOT_INSTANCE_NOT_VERIFIED");
           }
-          return ack(
-              api.call(
-                  "CreateGWSSavepoint",
-                  FLINK_VERSION,
-                  Collections.emptyMap(),
-                  fields("Id", step.getProviderJobId(), "Description", snapshotName(step))),
-              null,
-              null);
+          JsonObject snapshot =
+              fields("Id", step.getProviderJobId(), "Description", snapshotName(step));
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call(
+                          "CreateGWSSavepoint", FLINK_VERSION, Collections.emptyMap(), snapshot),
+                      null,
+                      null));
         case STOP:
           JsonObject running =
               instance(
@@ -434,20 +448,40 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
               || application(api, target, step.getProviderJobId()) == null) {
             return rejected("INSTANCE_NOT_VERIFIED");
           }
-          return ack(
-              api.call(
-                  "CancelApplicationInstance",
-                  FLINK_VERSION,
-                  Collections.emptyMap(),
-                  fields("InstanceId", step.getCommand().getProviderInstance())),
-              null,
-              null);
+          JsonObject cancel = fields("InstanceId", step.getCommand().getProviderInstance());
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call(
+                          "CancelApplicationInstance",
+                          FLINK_VERSION,
+                          Collections.emptyMap(),
+                          cancel),
+                      null,
+                      null));
         default:
           return rejected("CAPABILITY_UNVERIFIED");
       }
     } catch (IOException | RuntimeException e) {
+      return rejected("VOLCENGINE_PREFLIGHT_UNAVAILABLE");
+    }
+  }
+
+  private Observation write(BooleanSupplier permit, CloudWrite command) {
+    if (!permit.getAsBoolean()) {
+      return rejected("DISPATCH_NOT_AUTHORIZED");
+    }
+    try {
+      return command.send();
+    } catch (IOException | RuntimeException e) {
       return Observation.outcome(Outcome.UNKNOWN, "RESULT_UNCERTAIN");
     }
+  }
+
+  @FunctionalInterface
+  private interface CloudWrite {
+    Observation send() throws IOException;
   }
 
   private boolean matchesDraftForPublish(VolcengineOpenApi api, Target target, OperationStep step) {
@@ -511,9 +545,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       Observation observation = Observation.outcome(Outcome.CONFIRMED, null);
       switch (step.getAction()) {
         case STAGE_ARTIFACT:
-          return binding.permitsArtifacts(context)
-              ? artifacts.stage(context, step, false)
-              : awaiting();
+          return binding.permitsArtifacts(context) ? artifacts.inspect(context, step) : awaiting();
         case CREATE_DRAFT:
           String draftId = previous == null ? null : previous.getDraftId();
           JsonObject matchedDraft = draft(api, target, draftId);
@@ -595,7 +627,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   private Observation start(
-      VolcengineOpenApi api, Target target, OperationStep step, boolean snapshotEnabled)
+      VolcengineOpenApi api,
+      Target target,
+      OperationStep step,
+      boolean snapshotEnabled,
+      BooleanSupplier permit)
       throws IOException {
     RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
     if (mode != RestoreMode.FROM_NEW && !snapshotEnabled) {
@@ -619,10 +655,14 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       }
       parameters.addProperty("SavepointId", snapshot);
     }
-    Reply result = api.call("StartGWSApplication", GWS_VERSION, scope(target), parameters);
-    Observation ack = ack(result, null, null);
-    ack.setInstanceId(text(result.data(), "InstanceId"));
-    return ack;
+    return write(
+        permit,
+        () -> {
+          Reply result = api.call("StartGWSApplication", GWS_VERSION, scope(target), parameters);
+          Observation acknowledgement = ack(result, null, null);
+          acknowledgement.setInstanceId(text(result.data(), "InstanceId"));
+          return acknowledgement;
+        });
   }
 
   private boolean isCurrentRunning(VolcengineOpenApi api, Target target, OperationStep step)
@@ -726,7 +766,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     return result;
   }
 
-  private VolcengineOpenApi client(Context context) throws IOException {
+  VolcengineOpenApi client(Context context) throws IOException {
     if (!"cn-beijing".equals(context.getRegion())
         || !ENGINES.contains(context.getTarget().getEngineRef())) {
       return null;

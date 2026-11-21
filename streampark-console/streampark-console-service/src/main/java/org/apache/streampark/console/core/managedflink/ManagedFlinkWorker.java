@@ -193,29 +193,19 @@ class ManagedFlinkWorker {
                           conflict,
                           app);
                 }
-                store
-                    .jdbc()
-                    .update(
-                        "insert into t_flink_managed_operation_step "
-                            + "(operation_id,step_index,action,state,error_code,started_at,finished_at) "
-                            + "values (?,?,?,'FAILED',?,?,?)",
-                        operation,
-                        index,
-                        action.name(),
-                        conflict,
-                        System.currentTimeMillis(),
-                        System.currentTimeMillis());
-                finish(op, "FAILED");
+                failBeforeDispatch(
+                    op, step, index, Observation.outcome(Outcome.REJECTED, conflict));
               }
             });
         return;
       }
-      if (!Boolean.TRUE.equals(tx.execute(t -> markDispatch(step, op, epoch, index)))) {
-        return;
-      }
       Observation response;
       try {
-        response = provider.dispatch(context, step);
+        response =
+            provider.dispatch(
+                context,
+                step,
+                () -> Boolean.TRUE.equals(tx.execute(t -> markDispatch(step, op, epoch, index))));
       } catch (RuntimeException e) {
         response = Observation.outcome(Outcome.UNKNOWN, "RESULT_UNCERTAIN");
       }
@@ -223,6 +213,10 @@ class ManagedFlinkWorker {
       tx.executeWithoutResult(
           t -> {
             if (owns(operation, epoch)) {
+              if (attempt(operation, index) == null) {
+                failBeforeDispatch(op, step, index, ack);
+                return;
+              }
               updateAttempt(step, index, ack, "WAITING_PROVIDER");
               if (ack.getOutcome() == Outcome.REJECTED) {
                 updateAttempt(step, index, ack, "FAILED");
@@ -401,11 +395,12 @@ class ManagedFlinkWorker {
   }
 
   private boolean markDispatch(OperationStep step, Map<String, Object> op, long epoch, int index) {
-    if (!owns(step.getOperationId(), epoch)) {
+    if (!owns(step.getOperationId(), epoch) || attempt(step.getOperationId(), index) != null) {
       return false;
     }
     if (System.currentTimeMillis() >= number(op, "deadline_at")) {
-      finish(op, "FAILED");
+      failBeforeDispatch(
+          op, step, index, Observation.outcome(Outcome.REJECTED, "OPERATION_DEADLINE_EXPIRED"));
       return false;
     }
     store
@@ -418,6 +413,27 @@ class ManagedFlinkWorker {
             step.getAction().name(),
             System.currentTimeMillis());
     return true;
+  }
+
+  private void failBeforeDispatch(
+      Map<String, Object> op, OperationStep step, int index, Observation response) {
+    String code =
+        response.getOutcome() == Outcome.REJECTED ? response.getCode() : "STEP_NOT_DISPATCHED";
+    long now = System.currentTimeMillis();
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_operation_step "
+                + "(operation_id,step_index,action,state,request_id,error_code,started_at,finished_at) "
+                + "values (?,?,?,'FAILED',?,?,?,?)",
+            step.getOperationId(),
+            index,
+            step.getAction().name(),
+            safe(response.getRequestId(), 128),
+            safe(code, 64),
+            now,
+            now);
+    finish(op, "FAILED");
   }
 
   private void apply(

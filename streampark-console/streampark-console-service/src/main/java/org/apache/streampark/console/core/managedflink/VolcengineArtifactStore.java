@@ -41,6 +41,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.util.function.BooleanSupplier;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.hex;
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.sha256;
@@ -52,7 +53,11 @@ final class VolcengineArtifactStore {
     this.binding = binding;
   }
 
-  Observation stage(Context context, OperationStep step, boolean dispatch) {
+  Observation inspect(Context context, OperationStep step) {
+    return stage(context, step, null);
+  }
+
+  Observation stage(Context context, OperationStep step, BooleanSupplier permit) {
     FrozenCommand command = step.getCommand();
     String bucket = context.getTarget().getArtifactBucket();
     String digest = command.getArtifactDigest();
@@ -72,6 +77,7 @@ final class VolcengineArtifactStore {
             + "/"
             + digest
             + ".jar";
+    boolean uploading = false;
     try (TOSV2 tos = client(context)) {
       try (GetObjectV2Output read =
           tos.getObject(new GetObjectV2Input().setBucket(bucket).setKey(key))) {
@@ -80,7 +86,10 @@ final class VolcengineArtifactStore {
         }
         Observation found = Observation.outcome(Outcome.CONFIRMED, null);
         found.setArtifactRef("tos://" + bucket + "/" + key);
-        if (dispatch) {
+        if (permit != null) {
+          if (!permit.getAsBoolean()) {
+            return Observation.outcome(Outcome.REJECTED, "DISPATCH_NOT_AUTHORIZED");
+          }
           found.setRequestId(read.getRequestInfo().getRequestId());
         }
         return found;
@@ -88,27 +97,34 @@ final class VolcengineArtifactStore {
         if (e.getStatusCode() != 404) {
           throw e;
         }
-        if (!dispatch) {
+        if (permit == null) {
           return Observation.outcome(Outcome.WAITING, "ARTIFACT_NOT_OBSERVED");
         }
       }
+      PutObjectFromFileInput input =
+          new PutObjectFromFileInput()
+              .setBucket(bucket)
+              .setKey(key)
+              .setForbidOverwrite(true)
+              .setFile(Paths.get(command.getArtifactRef()).toFile());
+      if (!permit.getAsBoolean()) {
+        return Observation.outcome(Outcome.REJECTED, "DISPATCH_NOT_AUTHORIZED");
+      }
+      uploading = true;
       Observation uploaded = Observation.outcome(Outcome.WAITING, null);
-      uploaded.setRequestId(
-          tos.putObjectFromFile(
-                  new PutObjectFromFileInput()
-                      .setBucket(bucket)
-                      .setKey(key)
-                      .setForbidOverwrite(true)
-                      .setFile(Paths.get(command.getArtifactRef()).toFile()))
-              .getRequestInfo()
-              .getRequestId());
+      uploaded.setRequestId(tos.putObjectFromFile(input).getRequestInfo().getRequestId());
       return uploaded;
     } catch (TosServerException e) {
-      Observation unavailable = Observation.outcome(Outcome.UNKNOWN, "ARTIFACT_TOS_UNAVAILABLE");
+      Observation unavailable =
+          Observation.outcome(
+              uploading || permit == null ? Outcome.UNKNOWN : Outcome.REJECTED,
+              "ARTIFACT_TOS_UNAVAILABLE");
       unavailable.setRequestId(e.getRequestID());
       return unavailable;
     } catch (ApiException | IOException | RuntimeException e) {
-      return Observation.outcome(Outcome.UNKNOWN, "ARTIFACT_TOS_UNAVAILABLE");
+      return Observation.outcome(
+          uploading || permit == null ? Outcome.UNKNOWN : Outcome.REJECTED,
+          "ARTIFACT_TOS_UNAVAILABLE");
     }
   }
 

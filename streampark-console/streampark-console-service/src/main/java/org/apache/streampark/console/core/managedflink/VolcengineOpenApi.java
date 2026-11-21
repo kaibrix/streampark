@@ -51,10 +51,16 @@ final class VolcengineOpenApi {
   static final OkHttpClient TRANSPORT = transport();
   private final String region;
   private final Credentials credentials;
+  private final OkHttpClient transport;
 
   VolcengineOpenApi(String region, Credentials credentials) {
+    this(region, credentials, TRANSPORT);
+  }
+
+  VolcengineOpenApi(String region, Credentials credentials, OkHttpClient transport) {
     this.region = region;
     this.credentials = credentials;
+    this.transport = transport;
   }
 
   private static OkHttpClient transport() {
@@ -134,7 +140,7 @@ final class VolcengineOpenApi {
     if ("POST".equals(method)) {
       request.post(RequestBody.create(JSON, payload));
     }
-    Response response = TRANSPORT.newCall(request.build()).execute();
+    Response response = transport.newCall(request.build()).execute();
     try (ResponseBody entity = response.body()) {
       if (entity == null
           || entity.contentLength() > MAX_RESPONSE_BYTES
