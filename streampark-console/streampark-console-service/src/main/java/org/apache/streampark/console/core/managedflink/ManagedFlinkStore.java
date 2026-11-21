@@ -17,11 +17,14 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import org.apache.streampark.console.core.enums.ReleaseState;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.web.server.ResponseStatusException;
@@ -29,6 +32,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -49,6 +54,23 @@ class ManagedFlinkStore {
 
   JdbcTemplate jdbc() {
     return sql;
+  }
+
+  void markApplicationReleased(long app) {
+    sql.execute(
+        (ConnectionCallback<Integer>)
+            connection -> {
+              DatabaseMetaData metadata = connection.getMetaData();
+              String quote = metadata.getIdentifierQuoteString();
+              String column = metadata.storesUpperCaseIdentifiers() ? "RELEASE" : "release";
+              try (PreparedStatement statement =
+                  connection.prepareStatement(
+                      "update t_flink_app set " + quote + column + quote + "=? where id=?")) {
+                statement.setInt(1, ReleaseState.DONE.get());
+                statement.setLong(2, app);
+                return statement.executeUpdate();
+              }
+            });
   }
 
   Map<String, Object> find(String query, Object... parameters) {

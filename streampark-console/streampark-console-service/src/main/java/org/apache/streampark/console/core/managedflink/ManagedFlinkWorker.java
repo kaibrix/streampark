@@ -442,7 +442,7 @@ class ManagedFlinkWorker {
                 release,
                 now,
                 app);
-        store.jdbc().update("update t_flink_app set release=0 where id=?", app);
+        store.markApplicationReleased(app);
         return true;
       case START:
         return start(job, step, result, release, now);
