@@ -40,8 +40,10 @@ final class VolcengineProfileBinding {
   private final String project;
   private final String directory;
   private final String pool;
+  private final String poolName;
   private final List<String> engines;
   private final boolean sqlWrites;
+  private final boolean snapshots;
 
   VolcengineProfileBinding(
       @Value("${streampark.managed-flink.volcengine.profile:}") String profile,
@@ -50,9 +52,12 @@ final class VolcengineProfileBinding {
       @Value("${streampark.managed-flink.volcengine.project-id:}") String project,
       @Value("${streampark.managed-flink.volcengine.directory-id:}") String directory,
       @Value("${streampark.managed-flink.volcengine.pool-id:}") String pool,
+      @Value("${streampark.managed-flink.volcengine.pool-name:}") String poolName,
       @Value("${streampark.managed-flink.volcengine.engine:}") String engine,
       @Value("${streampark.managed-flink.volcengine.sql-lifecycle-enabled:false}")
-          boolean sqlWrites) {
+          boolean sqlWrites,
+      @Value("${streampark.managed-flink.volcengine.snapshot-lifecycle-enabled:false}")
+          boolean snapshots) {
     provider =
         profile.isEmpty() ? null : new CredentialProvider(new CLIConfigCredentialProvider(profile));
     this.team = team;
@@ -60,8 +65,10 @@ final class VolcengineProfileBinding {
     this.project = project;
     this.directory = directory;
     this.pool = pool;
+    this.poolName = poolName;
     this.engines = Arrays.asList(engine.trim().split("\\s*,\\s*"));
     this.sqlWrites = sqlWrites;
+    this.snapshots = snapshots;
   }
 
   boolean permitsConnection(long team, String account) {
@@ -83,11 +90,20 @@ final class VolcengineProfileBinding {
         && Objects.equals(project, t.getProjectId())
         && Objects.equals(directory, t.getDirectoryId())
         && Objects.equals(pool, t.getResourcePoolId())
+        && !poolName.isEmpty()
+        && poolName.equals(t.getResourcePoolName())
         && engines.contains(t.getEngineRef());
   }
 
   boolean permitsSqlWrites(Context context) {
-    return sqlWrites && permits(context);
+    return sqlWrites
+        && context.isServerCredential()
+        && context.getCredentials() == null
+        && permits(context);
+  }
+
+  boolean permitsSnapshots(Context context) {
+    return snapshots && permitsSqlWrites(context);
   }
 
   synchronized Credentials credentials(Context context) throws ApiException {

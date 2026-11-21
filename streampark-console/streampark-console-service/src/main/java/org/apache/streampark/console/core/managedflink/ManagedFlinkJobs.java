@@ -216,7 +216,13 @@ public class ManagedFlinkJobs {
     ManagedFlinkProvider provider = catalog.provider(text(conn, "provider"));
     Target target = catalog.target(env);
     Context context =
-        new Context(team, text(env, "region"), text(conn, "account_ref"), target, null);
+        new Context(
+            team,
+            text(env, "region"),
+            text(conn, "account_ref"),
+            target,
+            null,
+            text(conn, "credential") == null);
     Map<String, String> capabilities = provider.capabilities(context);
     FrozenCommand frozen = new FrozenCommand();
     frozen.setRequest(cmd);
@@ -333,6 +339,7 @@ public class ManagedFlinkJobs {
     }
     frozen.setActions(actions);
     String release = id();
+    frozen.setReleaseMarker(release);
     Long next =
         store
             .jdbc()
@@ -416,6 +423,7 @@ public class ManagedFlinkJobs {
     }
     frozen.setTarget(store.decode(text(version, "target"), Target.class));
     frozen.setSpec(store.decode(text(version, "spec"), Spec.class));
+    frozen.setReleaseMarker(release);
     frozen.setArtifactRef(text(version, "artifact_ref"));
     frozen.setSpecHash(text(version, "spec_hash"));
     frozen.setProviderVersion(text(version, "provider_version"));
@@ -626,7 +634,12 @@ public class ManagedFlinkJobs {
     check(
         spec.getArgs() != null
             && spec.getArgs().size() <= 128
-            && spec.getArgs().stream().allMatch(arg -> arg != null && arg.length() <= 4096),
+            && spec.getArgs().stream()
+                .allMatch(
+                    arg ->
+                        arg != null
+                            && arg.length() <= 4096
+                            && arg.codePoints().noneMatch(Character::isISOControl)),
         HttpStatus.BAD_REQUEST,
         "Invalid program arguments");
     List<String> allowed =
@@ -638,8 +651,38 @@ public class ManagedFlinkJobs {
             "jobmanager.memory.process.size",
             "taskmanager.memory.process.size");
     check(
-        spec.getConfiguration() != null && allowed.containsAll(spec.getConfiguration().keySet()),
+        spec.getConfiguration() != null
+            && spec.getConfiguration().size() <= 32
+            && spec.getConfiguration().entrySet().stream()
+                .allMatch(
+                    entry ->
+                        entry.getKey() != null
+                            && (allowed.contains(entry.getKey())
+                                || entry
+                                    .getKey()
+                                    .matches(
+                                        "containerized\\.(master|taskmanager)\\.env\\.[A-Za-z_][A-Za-z0-9_]{0,63}"))
+                            && entry.getValue() != null
+                            && entry.getValue().length() <= 512
+                            && entry.getValue().codePoints().noneMatch(Character::isISOControl)
+                            && validRuntimeSetting(entry.getKey(), entry.getValue())),
         HttpStatus.BAD_REQUEST,
         "Unsupported Flink configuration");
+  }
+
+  private boolean validRuntimeSetting(String key, String value) {
+    switch (key) {
+      case "parallelism.default":
+      case "taskmanager.numberOfTaskSlots":
+        return value.matches("[1-9][0-9]{0,8}");
+      case "jobmanager.memory.process.size":
+      case "taskmanager.memory.process.size":
+        return value.matches("(?i)[1-9][0-9]{0,8}\\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)");
+      case "execution.checkpointing.interval":
+      case "execution.checkpointing.timeout":
+        return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
+      default:
+        return true;
+    }
   }
 }

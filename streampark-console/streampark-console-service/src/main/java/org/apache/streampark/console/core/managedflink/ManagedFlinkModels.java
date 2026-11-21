@@ -176,6 +176,7 @@ public final class ManagedFlinkModels {
     private String artifactRef;
     private String artifactDigest;
     private Long artifactSize;
+    private String releaseMarker;
   }
 
   @Data
@@ -185,6 +186,7 @@ public final class ManagedFlinkModels {
     private final String accountRef;
     private final Target target;
     private final Credentials credentials;
+    private final boolean serverCredential;
 
     public Context(String region, String accountRef, Target target, Credentials credentials) {
       this(-1, region, accountRef, target, credentials);
@@ -192,11 +194,22 @@ public final class ManagedFlinkModels {
 
     public Context(
         long teamId, String region, String accountRef, Target target, Credentials credentials) {
+      this(teamId, region, accountRef, target, credentials, credentials == null);
+    }
+
+    public Context(
+        long teamId,
+        String region,
+        String accountRef,
+        Target target,
+        Credentials credentials,
+        boolean serverCredential) {
       this.teamId = teamId;
       this.region = region;
       this.accountRef = accountRef;
       this.target = target;
       this.credentials = credentials;
+      this.serverCredential = serverCredential;
     }
 
     @Override
@@ -242,6 +255,7 @@ public final class ManagedFlinkModels {
     private String draftId;
     private String jobId;
     private String version;
+    private String remoteVersionId;
     private String specHash;
     private String instanceId;
     private String runtimeId;

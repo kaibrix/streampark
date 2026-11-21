@@ -324,7 +324,8 @@ public class ManagedFlinkCatalog {
                     text(env, "region"),
                     text(conn, "account_ref"),
                     target(env),
-                    null)));
+                    null,
+                    text(conn, "credential") == null)));
   }
 
   Map<String, Object> connection(long team, String id) {

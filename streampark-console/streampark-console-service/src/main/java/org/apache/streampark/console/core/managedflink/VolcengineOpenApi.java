@@ -20,6 +20,7 @@ package org.apache.streampark.console.core.managedflink;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.squareup.okhttp.Authenticator;
 import com.squareup.okhttp.HttpUrl;
 import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
@@ -32,6 +33,7 @@ import com.volcengine.sign.Credentials;
 import com.volcengine.sign.VolcstackSign;
 
 import java.io.IOException;
+import java.net.Proxy;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +44,7 @@ final class VolcengineOpenApi {
   static final String FLINK_VERSION = "2025-01-01";
   static final String GWS_VERSION = "2021-06-01";
   private static final HttpUrl ENDPOINT = HttpUrl.parse("https://open.volcengineapi.com/");
+  private static final HttpUrl STS = HttpUrl.parse("https://sts.volcengineapi.com/");
   private static final MediaType JSON = MediaType.parse("application/json; charset=UTF-8");
   private static final long MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -63,33 +66,64 @@ final class VolcengineOpenApi {
     client.setRetryOnConnectionFailure(false);
     client.setFollowRedirects(false);
     client.setFollowSslRedirects(false);
+    client.setAuthenticator(
+        new Authenticator() {
+          @Override
+          public Request authenticate(Proxy proxy, Response response) {
+            return null;
+          }
+
+          @Override
+          public Request authenticateProxy(Proxy proxy, Response response) {
+            return null;
+          }
+        });
     return client;
   }
 
   Reply call(String action, String version, Map<String, String> scope, JsonObject body)
       throws IOException {
+    return call(ENDPOINT, "flink", "POST", action, version, scope, body.toString());
+  }
+
+  Reply identity() throws IOException {
+    return call(
+        STS, "sts", "GET", "GetCallerIdentity", "2018-01-01", java.util.Collections.emptyMap(), "");
+  }
+
+  private Reply call(
+      HttpUrl endpoint,
+      String service,
+      String method,
+      String action,
+      String version,
+      Map<String, String> scope,
+      String payload)
+      throws IOException {
     VolcstackSign signer = new VolcstackSign(credentials);
-    signer.setMethod("POST");
-    signer.setService("flink");
+    signer.setMethod(method);
+    signer.setService(service);
     signer.setRegion(region);
     List<Pair> parameters = new ArrayList<>();
     parameters.add(new Pair("Action", action));
     parameters.add(new Pair("Version", version));
     scope.forEach((name, value) -> parameters.add(new Pair(name, value)));
     Map<String, String> headers = new LinkedHashMap<>();
-    String payload = body.toString();
+    headers.put("Host", endpoint.host());
     signer.applyToParams(parameters, headers, payload);
     if (!headers.containsKey("Authorization")) {
       throw new IOException("Volcengine request could not be signed");
     }
-    HttpUrl.Builder url = ENDPOINT.newBuilder();
+    HttpUrl.Builder url = endpoint.newBuilder();
     for (Pair pair : parameters) {
       url.addQueryParameter(pair.getName(), pair.getValue());
     }
     Request.Builder request = new Request.Builder().url(url.build());
     headers.forEach(request::header);
-    Response response =
-        TRANSPORT.newCall(request.post(RequestBody.create(JSON, payload)).build()).execute();
+    if ("POST".equals(method)) {
+      request.post(RequestBody.create(JSON, payload));
+    }
+    Response response = TRANSPORT.newCall(request.build()).execute();
     try (ResponseBody entity = response.body()) {
       if (entity == null
           || entity.contentLength() > MAX_RESPONSE_BYTES
@@ -105,7 +139,7 @@ final class VolcengineOpenApi {
           root.get("Result"),
           requestId,
           text(error, "Code"),
-          root.has("ResponseMetadata") && !meta.has("Error"));
+          requestId != null && !requestId.isEmpty() && !meta.has("Error"));
     } catch (RuntimeException e) {
       throw new IOException("Invalid Volcengine response envelope");
     }
