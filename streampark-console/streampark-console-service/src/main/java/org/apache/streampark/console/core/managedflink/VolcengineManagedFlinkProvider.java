@@ -367,9 +367,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
               "Id",
               null);
         case PUBLISH:
-          JsonObject desired = draft(api, target, step.getDraftId());
-          if (!supportedSpec(context, step) || !VolcengineExecutable.matches(desired, step, true)) {
+          if (!supportedSpec(context, step) || !matchesDraftForPublish(api, target, step)) {
             return rejected("DRAFT_NOT_VERIFIED");
+          }
+          if (step.getCommand().getSpec().getType() == JobType.SQL) {
+            Observation syntaxFailure = sqlSyntaxFailure(api, target, step);
+            if (syntaxFailure != null) {
+              return syntaxFailure;
+            }
+            if (!matchesDraftForPublish(api, target, step)) {
+              return rejected("DRAFT_NOT_VERIFIED");
+            }
           }
           Map<String, String> query = scope(target);
           query.put("Id", step.getDraftId());
@@ -440,6 +448,59 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     } catch (IOException | RuntimeException e) {
       return Observation.outcome(Outcome.UNKNOWN, "RESULT_UNCERTAIN");
     }
+  }
+
+  private boolean matchesDraftForPublish(VolcengineOpenApi api, Target target, OperationStep step) {
+    try {
+      return VolcengineExecutable.matches(draft(api, target, step.getDraftId()), step, true);
+    } catch (IOException | RuntimeException e) {
+      // Publish has not been dispatched when the draft cannot be read or matched.
+      return false;
+    }
+  }
+
+  private Observation sqlSyntaxFailure(VolcengineOpenApi api, Target target, OperationStep step) {
+    try {
+      Reply validation =
+          api.call(
+              "ValidateGWSApplicationDraft",
+              GWS_VERSION,
+              scope(target),
+              fields(
+                  "Id",
+                  step.getDraftId(),
+                  "JobType",
+                  "FLINK_STREAMING_SQL",
+                  "SqlText",
+                  step.getCommand().getSpec().getSql()));
+      if (rejectsSqlSyntax(validation)) {
+        Observation failure = rejected("SQL_SYNTAX_REJECTED");
+        failure.setRequestId(validation.requestId);
+        return failure;
+      }
+    } catch (IOException | RuntimeException ignored) {
+      // When validation is unavailable, publish and startup keep their own provider checks.
+    }
+    return null;
+  }
+
+  static boolean rejectsSqlSyntax(Reply validation) {
+    if (!validation.ok()) {
+      return false;
+    }
+    JsonObject data = validation.data();
+    JsonElement valid = data.get("Data");
+    String message = text(data, "Message");
+    // VERIFY_FAILED also covers UDF SQL that needs deep validation and can run correctly.
+    return valid != null
+        && valid.isJsonPrimitive()
+        && valid.getAsJsonPrimitive().isBoolean()
+        && !valid.getAsBoolean()
+        && "VERIFY_FAILED".equals(text(data, "Type"))
+        && message != null
+        && message
+            .trim()
+            .startsWith("com.bytedance.openplatform.gts.common.model.exception.SqlParseException:");
   }
 
   @Override

@@ -22,6 +22,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Frozen
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
+import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -33,6 +34,33 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class VolcengineExecutableTest {
   private static final String ARTIFACT = "tos://fixture-bucket/test/immutable.jar";
+
+  @Test
+  void onlyExplicitParserFailureBlocksPublication() {
+    JsonObject data = new JsonObject();
+    data.addProperty("Data", false);
+    data.addProperty("Type", "VERIFY_FAILED");
+    data.addProperty(
+        "Message",
+        "com.bytedance.openplatform.gts.common.model.exception.SqlParseException: "
+            + "org.apache.flink.sql.parser.impl.ParseException: invalid fixture SQL");
+    Reply reply = new Reply(200, data, "test-request", null, true);
+    assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isTrue();
+    assertThat(
+            VolcengineManagedFlinkProvider.rejectsSqlSyntax(
+                new Reply(200, data, "test-request", "AccessDenied", false)))
+        .isFalse();
+    data.addProperty("Data", "false");
+    assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
+    data.addProperty("Data", true);
+    assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
+    data.addProperty("Data", false);
+    data.addProperty(
+        "Message", "SQL containing user-defined functions must be validated with deep-validate.");
+    assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
+    data.remove("Message");
+    assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
+  }
 
   @Test
   void flink116SqlDependenciesAndOptionsMatchPublishedManifest() {
