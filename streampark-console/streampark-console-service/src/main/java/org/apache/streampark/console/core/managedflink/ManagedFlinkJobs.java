@@ -174,6 +174,8 @@ public class ManagedFlinkJobs {
     result.put("currentRunId", text(job, "current_run_id"));
     result.put("pendingOperationId", text(job, "pending_operation_id"));
     result.put("syncStatus", text(job, "sync_status"));
+    result.put("cloudBound", text(job, "provider_job_id") != null);
+    result.put("observedAt", job.get("observed_at"));
     return result;
   }
 

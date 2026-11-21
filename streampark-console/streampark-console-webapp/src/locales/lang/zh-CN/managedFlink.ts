@@ -86,6 +86,8 @@ export default {
     STALE: '日志暂时无法读取',
   },
   reconcile: '刷新对账证据',
+  lastCloudRead: '上次确认云端状态',
+  cloudVerificationRequired: '请先核对云端状态，再提交新的操作。',
   importBuild: '导入已构建项目的 JAR',
   module: '模块',
 };

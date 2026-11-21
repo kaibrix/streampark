@@ -23,12 +23,15 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudS
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Command;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Restore;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import org.apache.streampark.console.core.service.ApplicationService;
 import org.apache.streampark.console.core.service.ServiceHelper;
 import org.apache.streampark.console.system.entity.Member;
@@ -47,6 +50,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -463,6 +467,46 @@ class ManagedFlinkLifecycleTest {
     assertThatExceptionOfType(ResponseStatusException.class)
         .isThrownBy(() -> test.publish("blocked", test.command()))
         .matches(error -> error.getStatus().value() == 409);
+  }
+
+  @Test
+  void cloudVerificationBlocksNewCommandsWhileDraftAndDuplicateReceiptStayAvailable() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    test.sql.update("update t_flink_managed_job set sync_status='STALE'");
+    assertThat(test.jobs.detail(100000L, 900401L)).containsEntry("cloudBound", false);
+    String published = test.publish("first", test.command());
+    test.complete(published);
+    Map<String, Object> confirmed = test.jobs.detail(100000L, 900401L);
+    assertThat(confirmed).containsEntry("cloudBound", true).containsEntry("syncStatus", "FRESH");
+    assertThat(((Number) confirmed.get("observedAt")).longValue()).isPositive();
+
+    for (String status : List.of("STALE", "DRIFTED", "MISSING", "AUTH_ERROR")) {
+      test.sql.update("update t_flink_managed_job set sync_status=?", status);
+      assertThat(test.jobs.detail(100000L, 900401L))
+          .containsEntry("cloudBound", true)
+          .containsEntry("syncStatus", status)
+          .containsEntry("observedAt", confirmed.get("observedAt"));
+      for (CommandType type : CommandType.values()) {
+        assertThatExceptionOfType(ResponseStatusException.class)
+            .isThrownBy(() -> test.enqueue(type, "blocked-" + type, test.command()))
+            .matches(error -> error.getStatus().value() == 409);
+      }
+    }
+
+    Spec draft = new Spec();
+    draft.setType(JobType.SQL);
+    draft.setSql("SELECT 2");
+    JobInput edit = new JobInput();
+    edit.setExpectedDraftRevision(1L);
+    edit.setSpec(draft);
+    test.tx.executeWithoutResult(t -> test.jobs.edit(100000L, 900401L, edit));
+    assertThat(((Spec) test.jobs.detail(100000L, 900401L).get("spec")).getSql())
+        .isEqualTo("SELECT 2");
+    assertThat(test.publish("first", test.command())).isEqualTo(published);
+    assertThat(
+            test.sql.queryForObject(
+                "select count(*) from t_flink_managed_operation", Integer.class))
+        .isEqualTo(1);
   }
 
   @Test

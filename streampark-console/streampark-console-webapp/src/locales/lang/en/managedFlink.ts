@@ -87,6 +87,8 @@ export default {
     STALE: 'The logs are temporarily unavailable',
   },
   reconcile: 'Refresh evidence',
+  lastCloudRead: 'Last confirmed cloud read',
+  cloudVerificationRequired: 'Cloud state requires verification before issuing new commands.',
   importBuild: 'Import built project JAR',
   module: 'Module',
 };

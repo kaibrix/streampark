@@ -105,7 +105,14 @@
   let pendingRefresh: Promise<void> | undefined;
   const run = computed(() => runs.value.find((value) => value.id === job.value?.currentRunId));
   const running = computed(() => run.value?.run_state === 'RUNNING');
-  const lock = computed(() => busy.value || Boolean(job.value?.pendingOperationId));
+  const cloudVerificationRequired = computed(
+    () =>
+      (job.value?.cloudBound ?? Boolean(job.value?.activeReleaseId)) &&
+      job.value?.syncStatus !== 'FRESH',
+  );
+  const lock = computed(
+    () => busy.value || Boolean(job.value?.pendingOperationId) || cloudVerificationRequired.value,
+  );
   const dirty = computed(
     () =>
       Boolean(spec.value) &&
@@ -258,6 +265,7 @@
   }
 
   function command(name: string, data: Record<string, unknown>) {
+    if (lock.value) return;
     void action(async () => {
       const fingerprint = 'managed-flink-command:' + JSON.stringify([props.appId, name, data]);
       const key = sessionStorage.getItem(fingerprint) || buildUUID();
@@ -350,7 +358,18 @@
         <Tag>{{ job.engineRef }}</Tag>
         <Tag>{{ job.syncStatus }}</Tag>
         <Tag>{{ run?.run_state || 'NOT_STARTED' }}</Tag>
+        <span v-if="job.observedAt && Number(job.observedAt) > 0">
+          {{ t('managedFlink.lastCloudRead') }}
+          {{ new Date(Number(job.observedAt)).toLocaleString() }}
+        </span>
       </Space>
+      <Alert
+        v-if="cloudVerificationRequired"
+        class="mb-4"
+        type="warning"
+        :message="t('managedFlink.cloudVerificationRequired')"
+        show-icon
+      />
       <Tabs>
         <TabPane key="draft" :tab="t('managedFlink.draft')">
           <Form layout="vertical">
@@ -410,7 +429,11 @@
               <Button v-auth="'app:update'" :disabled="busy" @click="validate">{{
                 t('managedFlink.validate')
               }}</Button>
-              <Popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('publish')">
+              <Popconfirm
+                :title="t('managedFlink.publishConfirm')"
+                :disabled="lock"
+                @confirm="publish('publish')"
+              >
                 <Button
                   v-auth="'app:release'"
                   type="primary"
@@ -472,6 +495,7 @@
             </Button>
             <Popconfirm
               :title="t('managedFlink.stop')"
+              :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'IMMEDIATE' })"
             >
               <Button v-auth="'app:cancel'" :disabled="lock || !running || !can('STOP')">{{
@@ -480,6 +504,7 @@
             </Popconfirm>
             <Popconfirm
               :title="t('managedFlink.snapshotStopConfirm')"
+              :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'AFTER_SNAPSHOT' })"
             >
               <Button
@@ -515,7 +540,11 @@
                   .map((item) => ({ value: item.id, label: 'R' + item.release_no }))
               "
             />
-            <Popconfirm :title="t('managedFlink.publishConfirm')" @confirm="publish('rollback')">
+            <Popconfirm
+              :title="t('managedFlink.publishConfirm')"
+              :disabled="lock"
+              @confirm="publish('rollback')"
+            >
               <Button
                 v-auth="'app:release'"
                 :disabled="lock || running || !sourceReleaseId || !can('PUBLISH_' + spec.type)"

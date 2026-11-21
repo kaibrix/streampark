@@ -37,6 +37,8 @@ export interface Job {
   currentRunId?: string;
   pendingOperationId?: string;
   syncStatus: string;
+  cloudBound?: boolean;
+  observedAt?: number | string;
   spec: Spec;
 }
 
