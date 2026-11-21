@@ -234,9 +234,9 @@
             end_time=null,
             state=14,
             tracking=1
-            and (execution_mode is null or execution_mode &lt;&gt; 7)
         </set>
         where id=#{application.id}
+          and (execution_mode is null or execution_mode &lt;&gt; 7)
     </update>
 
     <update id="updateJobManagerUrl" >

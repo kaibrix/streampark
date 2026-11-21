@@ -647,8 +647,8 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
 
   @Override
   public String k8sStartLog(Long id, Integer offset, Integer limit) throws Exception {
-    NativeFlinkGuard.requireNative(getById(id));
     Application application = getById(id);
+    NativeFlinkGuard.requireNative(application);
     ApiAlertException.throwIfNull(
         application, String.format("The application id=%s can't be found.", id));
     if (ExecutionMode.isKubernetesMode(application.getExecutionModeEnum())) {
@@ -1309,6 +1309,7 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
     Application application = getById(appParam.getId());
     NativeFlinkGuard.requireNative(application);
     boolean mapping = this.baseMapper.mapping(appParam);
+    application = getById(appParam.getId());
     if (application.isKubernetesModeJob()) {
       flinkK8sWatcher.doWatching(k8sWatcherWrapper.toTrackId(application));
     } else {

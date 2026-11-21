@@ -498,7 +498,7 @@ public class Application implements Serializable {
 
   @JsonIgnore
   public boolean isManagedFlinkJob() {
-    return ExecutionMode.MANAGED_FLINK.getMode().equals(getExecutionMode());
+    return ExecutionMode.MANAGED_FLINK == getExecutionModeEnum();
   }
 
   public boolean isKubernetesModeJob() {
