@@ -321,7 +321,7 @@ class ManagedFlinkLifecycleTest {
               users,
               new ManagedFlinkCredentials("", store),
               Collections.singletonList(provider));
-      jobs = new ManagedFlinkJobs(store, catalog, mock(ApplicationService.class));
+      jobs = new ManagedFlinkJobs(store, catalog, mock(ApplicationService.class), manager);
       first = new ManagedFlinkWorker(store, catalog, jobs, manager);
       second = new ManagedFlinkWorker(store, catalog, jobs, manager);
       reconciler = new ManagedFlinkReconciler(store, catalog, manager);

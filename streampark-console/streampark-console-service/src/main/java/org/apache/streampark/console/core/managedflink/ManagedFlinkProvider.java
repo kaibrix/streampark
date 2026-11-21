@@ -59,6 +59,10 @@ public interface ManagedFlinkProvider {
     return steps;
   }
 
+  /**
+   * Reads the scoped version and latest instance. A found result without an instance confirms that
+   * the job has no active instance. Returns null when an authoritative observation is unavailable.
+   */
   default CloudState inspect(Context context, String jobId) {
     return null;
   }

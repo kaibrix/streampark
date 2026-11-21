@@ -328,8 +328,15 @@ public class ManagedFlinkCatalog {
   }
 
   Map<String, Object> connection(long team, String id) {
+    return connection(team, id, false);
+  }
+
+  Map<String, Object> connection(long team, String id, boolean lock) {
     return store.require(
-        "select * from t_flink_cloud_connection where team_id=? and id=?", team, id);
+        "select * from t_flink_cloud_connection where team_id=? and id=?"
+            + (lock ? " for update" : ""),
+        team,
+        id);
   }
 
   Map<String, Object> environment(long team, String id, boolean lock) {

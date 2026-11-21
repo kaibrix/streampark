@@ -23,12 +23,14 @@ import org.apache.streampark.common.enums.ExecutionMode;
 import org.apache.streampark.console.core.entity.Application;
 import org.apache.streampark.console.core.enums.FlinkAppState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Command;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Restore;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
@@ -37,8 +39,12 @@ import org.apache.streampark.console.core.service.ApplicationService;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -61,12 +67,17 @@ public class ManagedFlinkJobs {
   private final ManagedFlinkStore store;
   private final ManagedFlinkCatalog catalog;
   private final ApplicationService applications;
+  private final TransactionTemplate transactions;
 
   ManagedFlinkJobs(
-      ManagedFlinkStore store, ManagedFlinkCatalog catalog, ApplicationService applications) {
+      ManagedFlinkStore store,
+      ManagedFlinkCatalog catalog,
+      ApplicationService applications,
+      PlatformTransactionManager manager) {
     this.store = store;
     this.catalog = catalog;
     this.applications = applications;
+    this.transactions = new TransactionTemplate(manager);
   }
 
   @Transactional
@@ -428,17 +439,98 @@ public class ManagedFlinkJobs {
     }
   }
 
-  @Transactional
+  @Transactional(propagation = Propagation.NOT_SUPPORTED)
   public void archive(long team, long app) {
     catalog.authorize(team, "app:delete");
-    Map<String, Object> job = job(team, app, true);
+    Map<String, Object> snapshot = job(team, app, false);
+    requireArchivable(snapshot);
+    String providerJob = text(snapshot, "provider_job_id");
+    String environmentId = text(snapshot, "environment_id");
+    Map<String, Object> env =
+        providerJob == null ? null : catalog.environment(team, environmentId, false);
+    Map<String, Object> conn =
+        env == null ? null : catalog.connection(team, text(env, "connection_id"));
+    if (providerJob != null) {
+      requireCloudStopped(app, snapshot, env, conn);
+    }
+
+    transactions.executeWithoutResult(
+        status -> {
+          Map<String, Object> current = job(team, app, true);
+          requireArchivable(current);
+          check(
+              Arrays.asList(
+                      "provider_job_id",
+                      "active_release_id",
+                      "current_run_id",
+                      "observed_at",
+                      "environment_id")
+                  .stream()
+                  .allMatch(field -> Objects.equals(text(snapshot, field), text(current, field))),
+              HttpStatus.CONFLICT,
+              "Managed Flink job changed during archive");
+          if (env != null) {
+            Map<String, Object> lockedEnv = catalog.environment(team, environmentId, true);
+            String connectionId = text(lockedEnv, "connection_id");
+            Map<String, Object> lockedConn = catalog.connection(team, connectionId, true);
+            check(
+                Objects.equals(text(env, "connection_id"), connectionId)
+                    && number(env, "config_version") == number(lockedEnv, "config_version")
+                    && number(conn, "credential_version")
+                        == number(lockedConn, "credential_version"),
+                HttpStatus.CONFLICT,
+                "Managed Flink environment changed during archive");
+          }
+          store
+              .jdbc()
+              .update(
+                  "update t_flink_managed_job set archived=true where team_id=? and app_id=?",
+                  team,
+                  app);
+        });
+  }
+
+  private void requireArchivable(Map<String, Object> job) {
     check(
         text(job, "pending_operation_id") == null
             && !isActive(currentRun(job))
             && !"DRIFTED".equals(text(job, "sync_status")),
         HttpStatus.CONFLICT,
         "Job must be stopped and reconciled");
-    store.jdbc().update("update t_flink_managed_job set archived=true where app_id=?", app);
+  }
+
+  private void requireCloudStopped(
+      long app, Map<String, Object> job, Map<String, Object> env, Map<String, Object> conn) {
+    String releaseId = text(job, "active_release_id");
+    check(releaseId != null, HttpStatus.CONFLICT, "Cloud version could not be confirmed");
+    Map<String, Object> release = release(app, releaseId);
+    String version = text(release, "provider_version");
+    check(
+        version != null && "PUBLISHED".equals(text(release, "status")),
+        HttpStatus.CONFLICT,
+        "Cloud version could not be confirmed");
+    String providerJob = text(job, "provider_job_id");
+    CloudState state;
+    try {
+      Target target = store.decode(text(release, "target"), Target.class);
+      state =
+          catalog
+              .provider(text(conn, "provider"))
+              .inspect(catalog.context(conn, env, target), providerJob);
+    } catch (RuntimeException error) {
+      throw new ResponseStatusException(
+          HttpStatus.CONFLICT, "Cloud job stop could not be confirmed");
+    }
+    check(
+        state != null
+            && state.getStatus() == ReadStatus.FOUND
+            && providerJob.equals(state.getJobId())
+            && version.equals(state.getVersion())
+            && (state.getInstanceId() == null
+                ? state.getRunState() == null
+                : Arrays.asList("STOPPED", "FAILED", "FINISHED").contains(state.getRunState())),
+        HttpStatus.CONFLICT,
+        "Cloud job stop could not be confirmed");
   }
 
   Map<String, Object> job(long team, long app, boolean lock) {
