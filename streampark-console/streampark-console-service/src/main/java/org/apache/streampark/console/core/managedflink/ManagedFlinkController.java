@@ -284,9 +284,11 @@ public class ManagedFlinkController {
       @RequestParam long teamId,
       @PathVariable long appId,
       @PathVariable String id,
-      @PathVariable String source) {
+      @PathVariable String source,
+      @RequestParam(required = false) Long from,
+      @RequestParam(required = false) Long until) {
     requireRead(teamId, appId);
-    return ok(jobs.diagnostics(teamId, appId, id, source));
+    return ok(jobs.diagnostics(teamId, appId, id, source, from, until));
   }
 
   @GetMapping("/apps/{appId}/snapshots")

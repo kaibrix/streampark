@@ -69,21 +69,27 @@
   const capabilities = ref<Capabilities>({});
   const releases = ref<Release[]>([]);
   const runs = ref<Run[]>([]);
-  const logRun = ref<string>();
-  const logFilters = reactive({ component: '', level: '', keyword: '', from: '', until: '' });
+  const diagnosticRun = ref<string>();
+  const diagnosticWindow = reactive({ from: '', until: '' });
+  const logFilters = reactive({ component: '', level: '', keyword: '' });
   const logs = ref<{
     status: string;
     requestIdSuffix?: string;
     nextCursor?: string;
-    from?: number;
-    until?: number;
-    rows?: { timestamp: number; component?: string; level?: string; message: string }[];
+    from?: number | string;
+    until?: number | string;
+    rows?: { timestamp: number | string; component?: string; level?: string; message: string }[];
   }>();
-  const metricRun = ref<string>();
   const metrics = ref<{
     status: string;
     source?: string;
-    series?: { name: string; unit: string; points: { timestamp: number; value: number }[] }[];
+    from?: number | string;
+    until?: number | string;
+    series?: {
+      name: string;
+      unit: string;
+      points: { timestamp: number | string; value: number | string }[];
+    }[];
   }>();
   const snapshots = ref<Snapshot[]>([]);
   const operations = ref<Operation[]>([]);
@@ -107,6 +113,15 @@
         configurationText.value !== savedConfigurationText.value),
   );
   const can = (key: string) => capabilities.value[key] === 'AVAILABLE';
+  const showVolcengineLogConsole = computed(
+    () =>
+      environment.value?.provider === 'volcengine' &&
+      hasPermission('app:log') &&
+      (!can('LOG_SEARCH') ||
+        ['NEEDS_CONFIGURATION', 'NO_ACCESS', 'EXPIRED', 'STALE'].includes(
+          logs.value?.status || '',
+        )),
+  );
   const publishCapability = computed(() =>
     spec.value?.type === 'SQL' && spec.value.udfArtifactId
       ? 'PUBLISH_SQL_UDF'
@@ -276,28 +291,37 @@
     });
   }
 
+  function clearDiagnostics() {
+    logs.value = undefined;
+    metrics.value = undefined;
+  }
+
+  function diagnosticParams() {
+    return {
+      from: diagnosticWindow.from ? new Date(diagnosticWindow.from).getTime() : undefined,
+      until: diagnosticWindow.until ? new Date(diagnosticWindow.until).getTime() : undefined,
+    };
+  }
+
   function readMetrics() {
-    const id = metricRun.value || job.value?.currentRunId;
-    if (!id) return;
-    metricRun.value = id;
+    const id = diagnosticRun.value || job.value?.currentRunId;
+    if (!id || busy.value) return;
+    diagnosticRun.value = id;
     void action(async () => {
-      metrics.value = await managedGet(base + `/runs/${id}/metrics`);
+      metrics.value = await managedGet(base + `/runs/${id}/metrics`, diagnosticParams());
     });
   }
 
   function readLogs(cursor?: string) {
-    const id = logRun.value || job.value?.currentRunId;
-    if (!id) return;
-    logRun.value = id;
-    const from = logFilters.from ? new Date(logFilters.from).getTime() : undefined;
-    const until = logFilters.until ? new Date(logFilters.until).getTime() : undefined;
+    const id = diagnosticRun.value || job.value?.currentRunId;
+    if (!id || busy.value) return;
+    diagnosticRun.value = id;
     void action(async () => {
       logs.value = await managedGet(base + `/runs/${id}/logs`, {
         component: logFilters.component || undefined,
         level: logFilters.level || undefined,
         keyword: logFilters.keyword || undefined,
-        from,
-        until,
+        ...diagnosticParams(),
         cursor,
       });
     });
@@ -527,14 +551,55 @@
           </List>
         </TabPane>
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
+          <Space
+            v-if="
+              runs.length && (can('METRICS') || (can('LOG_SEARCH') && hasPermission('app:log')))
+            "
+            class="mb-4"
+            wrap
+          >
+            <Select
+              :value="diagnosticRun || job.currentRunId"
+              :aria-label="t('managedFlink.diagnosticInstance')"
+              :disabled="busy"
+              :placeholder="t('managedFlink.diagnosticInstance')"
+              style="min-width: 220px"
+              :options="
+                runs.map((entry) => ({
+                  value: entry.id,
+                  label: `${entry.provider_instance_id} · ${entry.run_state}`,
+                }))
+              "
+              @change="
+                (id) => {
+                  diagnosticRun = String(id);
+                  clearDiagnostics();
+                }
+              "
+            />
+            <label>
+              {{ t('managedFlink.diagnosticFrom') }}
+              <Input
+                v-model:value="diagnosticWindow.from"
+                type="datetime-local"
+                :disabled="busy"
+                @input="clearDiagnostics"
+              />
+            </label>
+            <label>
+              {{ t('managedFlink.diagnosticUntil') }}
+              <Input
+                v-model:value="diagnosticWindow.until"
+                type="datetime-local"
+                :disabled="busy"
+                @input="clearDiagnostics"
+              />
+            </label>
+          </Space>
           <p>
             {{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}
             <a
-              v-if="
-                environment?.provider === 'volcengine' &&
-                !can('LOG_SEARCH') &&
-                hasPermission('app:log')
-              "
+              v-if="showVolcengineLogConsole"
               class="ml-2"
               href="https://console.volcengine.com/flink"
               target="_blank"
@@ -544,25 +609,6 @@
           </p>
           <div v-if="can('LOG_SEARCH') && runs.length && hasPermission('app:log')" class="mb-6">
             <Space wrap>
-              <Select
-                :value="logRun || job.currentRunId"
-                :aria-label="t('managedFlink.logInstance')"
-                :disabled="busy"
-                :placeholder="t('managedFlink.logInstance')"
-                style="min-width: 220px"
-                :options="
-                  runs.map((entry) => ({
-                    value: entry.id,
-                    label: `${entry.provider_instance_id} · ${entry.run_state}`,
-                  }))
-                "
-                @change="
-                  (id) => {
-                    logRun = String(id);
-                    logs = undefined;
-                  }
-                "
-              />
               <Input
                 v-model:value="logFilters.component"
                 :aria-label="t('managedFlink.logComponent')"
@@ -588,25 +634,11 @@
                 :maxlength="256"
                 @input="logs = undefined"
               />
-              <label
-                >{{ t('managedFlink.logFrom') }}
-                <Input
-                  v-model:value="logFilters.from"
-                  type="datetime-local"
-                  :disabled="busy"
-                  @input="logs = undefined"
-                />
-              </label>
-              <label
-                >{{ t('managedFlink.logUntil') }}
-                <Input
-                  v-model:value="logFilters.until"
-                  type="datetime-local"
-                  :disabled="busy"
-                  @input="logs = undefined"
-                />
-              </label>
-              <Button :loading="busy" :disabled="!(logRun || job.currentRunId)" @click="readLogs()">
+              <Button
+                :loading="busy"
+                :disabled="!(diagnosticRun || job.currentRunId)"
+                @click="readLogs()"
+              >
                 {{ t('managedFlink.loadLogs') }}
               </Button>
             </Space>
@@ -616,12 +648,12 @@
                 <span v-if="logs.requestIdSuffix"> · RequestId …{{ logs.requestIdSuffix }}</span>
               </p>
               <p v-if="logs.from !== undefined && logs.until !== undefined">
-                {{ new Date(logs.from).toLocaleString() }} →
-                {{ new Date(logs.until).toLocaleString() }}
+                {{ new Date(Number(logs.from)).toLocaleString() }} →
+                {{ new Date(Number(logs.until)).toLocaleString() }}
               </p>
               <ul>
                 <li v-for="(entry, index) in logs.rows" :key="index" class="mb-2">
-                  {{ new Date(entry.timestamp).toLocaleString() }} {{ entry.component }}
+                  {{ new Date(Number(entry.timestamp)).toLocaleString() }} {{ entry.component }}
                   {{ entry.level }}
                   <pre class="whitespace-pre-wrap break-words">{{ entry.message }}</pre>
                 </li>
@@ -633,35 +665,24 @@
           </div>
           <p>{{ t('managedFlink.metrics') }} · {{ capabilities.METRICS || 'UNVERIFIED' }}</p>
           <template v-if="can('METRICS') && runs.length">
-            <Space wrap>
-              <Select
-                :value="metricRun || job.currentRunId"
-                :disabled="busy"
-                style="min-width: 220px"
-                :options="
-                  runs.map((entry) => ({
-                    value: entry.id,
-                    label: `${entry.provider_instance_id} · ${entry.run_state}`,
-                  }))
-                "
-                @change="
-                  (id) => {
-                    metricRun = String(id);
-                    metrics = undefined;
-                  }
-                "
-              />
-              <Button :loading="busy" @click="readMetrics">{{
-                t('managedFlink.loadMetrics')
-              }}</Button>
-            </Space>
+            <Button
+              :loading="busy"
+              :disabled="!(diagnosticRun || job.currentRunId)"
+              @click="readMetrics"
+              >{{ t('managedFlink.loadMetrics') }}</Button
+            >
             <div v-if="metrics" class="mt-4">
               <p>{{ metrics.source }} {{ metrics.status }}</p>
+              <p v-if="metrics.from !== undefined && metrics.until !== undefined">
+                {{ new Date(Number(metrics.from) * 1000).toLocaleString() }} →
+                {{ new Date(Number(metrics.until) * 1000).toLocaleString() }}
+              </p>
               <details v-for="series in metrics.series" :key="series.name" class="mb-2">
                 <summary>{{ series.name }} · {{ series.unit }}</summary>
                 <ul>
                   <li v-for="point in series.points" :key="point.timestamp">
-                    {{ new Date(point.timestamp * 1000).toLocaleString() }} · {{ point.value }}
+                    {{ new Date(Number(point.timestamp) * 1000).toLocaleString() }} ·
+                    {{ point.value }}
                   </li>
                 </ul>
               </details>

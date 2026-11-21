@@ -22,6 +22,7 @@ import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import org.springframework.http.HttpStatus;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -34,7 +35,9 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
+import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.check;
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.object;
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.text;
 
@@ -45,7 +48,8 @@ final class VolcengineMonitor {
       DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
   private static final ZoneId BEIJING = ZoneId.of("Asia/Shanghai");
   private static final String NAMESPACE = "VCM_Flink";
-  private static final long WINDOW_SECONDS = 15 * 60;
+  private static final long DEFAULT_WINDOW = TimeUnit.MINUTES.toMillis(15);
+  private static final long MAX_WINDOW = TimeUnit.HOURS.toMillis(24);
 
   private VolcengineMonitor() {}
 
@@ -53,18 +57,24 @@ final class VolcengineMonitor {
     return Collections.singletonMap("status", status);
   }
 
-  static Map<String, Object> read(VolcengineOpenApi api, JsonObject run) throws IOException {
+  static Map<String, Object> read(VolcengineOpenApi api, JsonObject run, Long lower, Long upper)
+      throws IOException {
     String deployment = text(run, "DeploymentId");
-    String start = text(run, "StartTime");
-    String end = text(run, "EndTime");
+    Long start = time(text(run, "StartTime"));
+    Long end = time(text(run, "EndTime"));
     if (deployment == null || start == null) {
       return status("NO_DATA");
     }
     if (end == null && !"RUNNING".equals(text(run, "State"))) {
       return status("NO_DATA");
     }
-    long until = end == null ? Instant.now().getEpochSecond() : epoch(end);
-    long from = Math.max(epoch(start), until - WINDOW_SECONDS);
+    Window window = window(start, end, lower, upper, Instant.now().toEpochMilli());
+    if (window.from >= window.until) {
+      return status("NO_DATA");
+    }
+    // Cloud Monitor uses epoch seconds. Keep its points inside the requested millisecond window.
+    long from = (window.from + 999) / 1000;
+    long until = (window.until - 1) / 1000;
     if (from >= until) {
       return status("NO_DATA");
     }
@@ -172,5 +182,35 @@ final class VolcengineMonitor {
 
   static long epoch(String time) {
     return LocalDateTime.parse(time, CLOUD_TIME).atZone(BEIJING).toEpochSecond();
+  }
+
+  static Long time(String value) {
+    return value == null || value.isBlank() ? null : TimeUnit.SECONDS.toMillis(epoch(value));
+  }
+
+  static Window window(long start, Long end, Long lower, Long upper, long now) {
+    check(
+        (lower == null || lower >= 0)
+            && (upper == null || upper >= 0)
+            && (lower == null || upper == null || lower < upper),
+        HttpStatus.BAD_REQUEST,
+        "Invalid diagnostic window");
+    long until = end == null ? now : Math.min(end, now);
+    if (upper != null) {
+      until = Math.min(until, upper);
+    }
+    long from = Math.max(start, lower == null ? until - DEFAULT_WINDOW : lower);
+    check(until - from <= MAX_WINDOW, HttpStatus.BAD_REQUEST, "Diagnostic window exceeds 24 hours");
+    return new Window(from, until);
+  }
+
+  static final class Window {
+    final long from;
+    final long until;
+
+    Window(long from, long until) {
+      this.from = from;
+      this.until = until;
+    }
   }
 }

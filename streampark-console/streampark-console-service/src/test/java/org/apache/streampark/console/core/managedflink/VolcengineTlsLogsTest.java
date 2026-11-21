@@ -113,7 +113,15 @@ class VolcengineTlsLogsTest {
         json(
             "{\"ResultStatus\":\"complete\",\"ListOver\":false,"
                 + "\"Context\":\"vendor-cursor\",\"Analysis\":false,\"Logs\":[]}");
-    vendor.getAsJsonArray("Logs").add(row("s-42", "deployment-1", rowTime));
+    JsonObject visible = row("s-42", "deployment-1", rowTime);
+    visible.addProperty("message", "fixture line REQUEST-42");
+    vendor.getAsJsonArray("Logs").add(visible);
+    JsonObject metadataOnly = row("s-42", "deployment-1", rowTime);
+    metadataOnly.addProperty("extra_field", "request-42");
+    vendor.getAsJsonArray("Logs").add(metadataOnly);
+    JsonObject redacted = row("s-42", "deployment-1", rowTime);
+    redacted.addProperty("message", "fixture password=request-42");
+    vendor.getAsJsonArray("Logs").add(redacted);
     vendor.getAsJsonArray("Logs").add(row("s-43", "deployment-1", rowTime));
     vendor.getAsJsonArray("Logs").add(row("s-42", "deployment-2", rowTime));
     vendor.getAsJsonArray("Logs").add(row("s-42", "deployment-1", rowTime - 200_000));
@@ -135,7 +143,12 @@ class VolcengineTlsLogsTest {
             "rows",
             List.of(
                 Map.of(
-                    "timestamp", rowTime, "component", "taskmanager", "message", "fixture line")));
+                    "timestamp",
+                    rowTime,
+                    "component",
+                    "taskmanager",
+                    "message",
+                    "fixture line REQUEST-42")));
     String cursor = (String) page.get("nextCursor");
     assertThat(cursor).isNotBlank().isNotEqualTo("vendor-cursor");
     for (LogQuery wrong :

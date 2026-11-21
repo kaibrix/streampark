@@ -37,19 +37,19 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.check;
+import static org.apache.streampark.console.core.managedflink.VolcengineMonitor.time;
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.object;
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.text;
 
 @Component
 final class VolcengineTlsLogs {
-  private static final long DEFAULT_WINDOW = TimeUnit.MINUTES.toMillis(15);
-  private static final long MAX_WINDOW = TimeUnit.HOURS.toMillis(24);
   private static final int PAGE_SIZE = 100;
   private static final Pattern SENSITIVE_LINE =
       Pattern.compile(
@@ -180,26 +180,12 @@ final class VolcengineTlsLogs {
           "Invalid or expired log cursor");
     }
     long now = Instant.now().toEpochMilli();
-    long maxUntil = runEnd == null ? now : Math.min(runEnd, now);
-    long until =
+    VolcengineMonitor.Window bounds =
         next == null
-            ? Math.min(maxUntil, query.getUntil() == null ? maxUntil : query.getUntil())
-            : next.until;
-    long from =
-        next == null
-            ? Math.max(runStart, query.getFrom() == null ? until - DEFAULT_WINDOW : query.getFrom())
-            : next.from;
-    check(
-        query.getFrom() == null
-            || (query.getFrom() >= 0
-                && (query.getUntil() == null || query.getFrom() < query.getUntil())),
-        HttpStatus.BAD_REQUEST,
-        "Invalid log window");
-    check(
-        query.getUntil() == null || query.getUntil() >= 0,
-        HttpStatus.BAD_REQUEST,
-        "Invalid log window");
-    check(until - from <= MAX_WINDOW, HttpStatus.BAD_REQUEST, "Log window exceeds 24 hours");
+            ? VolcengineMonitor.window(runStart, runEnd, query.getFrom(), query.getUntil(), now)
+            : new VolcengineMonitor.Window(next.from, next.until);
+    long from = bounds.from;
+    long until = bounds.until;
     if (from >= until) {
       return status("NO_DATA");
     }
@@ -236,7 +222,8 @@ final class VolcengineTlsLogs {
         || !"false".equals(text(data, "Analysis"))) {
       return withRequestId(status("STALE"), response);
     }
-    List<Map<String, Object>> rows = rows(data, runtime, deployment, component, level, from, until);
+    List<Map<String, Object>> rows =
+        rows(data, runtime, deployment, component, level, keyword, from, until);
     String contextToken = text(data, "Context");
     if ("false".equals(text(data, "ListOver"))
         && contextToken != null
@@ -289,10 +276,12 @@ final class VolcengineTlsLogs {
       String deployment,
       String component,
       String level,
+      String keyword,
       long from,
       long until) {
     List<Map<String, Object>> result = new ArrayList<>();
     boolean includeLevel = permitsLevelFilter();
+    String needle = keyword.toLowerCase(Locale.ROOT);
     for (JsonElement element : array(data, "Logs")) {
       if (!element.isJsonObject()) {
         continue;
@@ -312,13 +301,19 @@ final class VolcengineTlsLogs {
           || (!component.isEmpty() && !component.equals(role))) {
         continue;
       }
+      String visibleMessage = safeMessage(message);
+      if (!needle.isEmpty()
+          && ("[redacted]".equals(visibleMessage)
+              || !visibleMessage.toLowerCase(Locale.ROOT).contains(needle))) {
+        continue;
+      }
       Map<String, Object> entry = new LinkedHashMap<>();
       entry.put("timestamp", at);
       entry.put("component", role != null && role.matches("[A-Za-z0-9_.-]{1,64}") ? role : null);
       if (severity != null && severity.matches("[A-Za-z]{1,16}")) {
         entry.put("level", severity);
       }
-      entry.put("message", safeMessage(message));
+      entry.put("message", visibleMessage);
       result.add(entry);
       if (result.size() == PAGE_SIZE) {
         break;
@@ -362,12 +357,6 @@ final class VolcengineTlsLogs {
     } catch (NumberFormatException ignored) {
       return null;
     }
-  }
-
-  private static Long time(String value) {
-    return value == null || value.isBlank()
-        ? null
-        : TimeUnit.SECONDS.toMillis(VolcengineMonitor.epoch(value));
   }
 
   private static String normalized(String value) {

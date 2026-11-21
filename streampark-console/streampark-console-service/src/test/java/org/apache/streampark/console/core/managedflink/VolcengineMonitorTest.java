@@ -19,15 +19,77 @@ package org.apache.streampark.console.core.managedflink;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.squareup.okhttp.MediaType;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Protocol;
+import com.squareup.okhttp.Response;
+import com.squareup.okhttp.ResponseBody;
+import com.volcengine.sign.Credentials;
+import okio.Buffer;
 import org.junit.jupiter.api.Test;
+import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class VolcengineMonitorTest {
   private static final String METRIC = "job_resource_usage_cpu_all";
+
+  @Test
+  void metricsUseSharedMillisecondBoundsWithinTheObservedRun() throws IOException {
+    JsonObject run = new JsonObject();
+    run.addProperty("DeploymentId", "fixture");
+    run.addProperty("StartTime", "2025-01-01 08:00:00");
+    run.addProperty("EndTime", "2025-01-01 08:30:00");
+    run.addProperty("State", "STOPPED");
+    long from = VolcengineMonitor.time("2025-01-01 08:05:00") + 5;
+    long until = VolcengineMonitor.time("2025-01-01 08:07:00");
+    List<JsonObject> requests = new ArrayList<>();
+    OkHttpClient transport = new OkHttpClient();
+    transport
+        .interceptors()
+        .add(
+            chain -> {
+              Buffer body = new Buffer();
+              chain.request().body().writeTo(body);
+              requests.add(JsonParser.parseString(body.readUtf8()).getAsJsonObject());
+              return new Response.Builder()
+                  .request(chain.request())
+                  .protocol(Protocol.HTTP_1_1)
+                  .code(200)
+                  .message("OK")
+                  .body(
+                      ResponseBody.create(
+                          MediaType.parse("application/json"),
+                          "{\"ResponseMetadata\":{\"RequestId\":\"fixture\"},\"Result\":{}}"))
+                  .build();
+            });
+    VolcengineOpenApi api =
+        new VolcengineOpenApi(
+            "cn-beijing", Credentials.getCredentials("fixture-ak", "fixture-sk"), transport);
+
+    assertThat(VolcengineMonitor.read(api, run, from, until))
+        .containsEntry("from", from / 1000 + 1)
+        .containsEntry("until", until / 1000 - 1);
+    assertThat(requests)
+        .hasSize(2)
+        .allSatisfy(
+            request -> {
+              assertThat(request.get("StartTime").getAsLong()).isEqualTo(from / 1000 + 1);
+              assertThat(request.get("EndTime").getAsLong()).isEqualTo(until / 1000 - 1);
+            });
+
+    assertThatThrownBy(() -> VolcengineMonitor.read(api, run, until, from))
+        .isInstanceOf(ResponseStatusException.class);
+    assertThat(requests).hasSize(2);
+  }
 
   @Test
   void returnsOnlyVerifiedResourceAndInstanceWindow() {

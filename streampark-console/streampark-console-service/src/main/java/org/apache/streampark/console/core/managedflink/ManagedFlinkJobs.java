@@ -191,7 +191,8 @@ public class ManagedFlinkJobs {
     }
   }
 
-  Map<String, Object> diagnostics(long team, long app, String runId, String source) {
+  Map<String, Object> diagnostics(
+      long team, long app, String runId, String source, Long from, Long until) {
     Map<String, Object> job = job(team, app, false);
     Map<String, Object> run =
         store.require(
@@ -206,7 +207,9 @@ public class ManagedFlinkJobs {
             catalog.context(connection, env, null),
             text(job, "provider_job_id"),
             text(run, "provider_instance_id"),
-            source);
+            source,
+            from,
+            until);
   }
 
   Map<String, Object> logs(

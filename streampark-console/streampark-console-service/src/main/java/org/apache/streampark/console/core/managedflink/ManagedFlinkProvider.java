@@ -81,6 +81,12 @@ public interface ManagedFlinkProvider {
     return Collections.singletonMap("status", "UNVERIFIED");
   }
 
+  /** Optional selection bounds are epoch milliseconds, shared with the log query. */
+  default Map<String, Object> diagnostics(
+      Context context, String jobId, String instanceId, String source, Long from, Long until) {
+    return diagnostics(context, jobId, instanceId, source);
+  }
+
   default Map<String, Object> logs(
       Context context, String jobId, String instanceId, LogQuery query) {
     return Collections.singletonMap("status", "UNVERIFIED");

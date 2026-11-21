@@ -35,6 +35,7 @@ import com.google.gson.JsonObject;
 import com.volcengine.ApiException;
 import com.volcengine.sign.Credentials;
 import org.springframework.stereotype.Component;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
@@ -276,6 +277,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   @Override
   public Map<String, Object> diagnostics(
       Context context, String jobId, String instanceId, String source) {
+    return diagnostics(context, jobId, instanceId, source, null, null);
+  }
+
+  @Override
+  public Map<String, Object> diagnostics(
+      Context context, String jobId, String instanceId, String source, Long from, Long until) {
     if (!"metrics".equals(source) || !binding.permitsMetricReads(context)) {
       return ManagedFlinkProvider.super.diagnostics(context, jobId, instanceId, source);
     }
@@ -284,7 +291,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       Target target = context.getTarget();
       JsonObject published = api == null ? null : application(api, target, jobId);
       JsonObject run = published == null ? null : instance(api, target, jobId, instanceId);
-      return run == null ? VolcengineMonitor.status("STALE") : VolcengineMonitor.read(api, run);
+      return run == null
+          ? VolcengineMonitor.status("STALE")
+          : VolcengineMonitor.read(api, run, from, until);
+    } catch (ResponseStatusException e) {
+      throw e;
     } catch (IOException | RuntimeException e) {
       return VolcengineMonitor.status("STALE");
     }
