@@ -362,18 +362,23 @@ public class SavepointServiceImpl extends ServiceImpl<SavepointMapper, Savepoint
 
     FlinkCluster cluster = flinkClusterService.getById(application.getFlinkClusterId());
     String clusterId = getClusterId(application, cluster);
+    ExecutionMode executionMode = application.getExecutionModeEnum();
+    String namespace =
+        executionMode == ExecutionMode.KUBERNETES_NATIVE_SESSION
+            ? cluster.getK8sNamespace()
+            : application.getK8sNamespace();
 
     Map<String, Object> properties = this.tryGetRestProps(application, cluster);
 
     TriggerSavepointRequest request =
         new TriggerSavepointRequest(
             flinkEnv.getFlinkVersion(),
-            application.getExecutionModeEnum(),
+            executionMode,
             properties,
             clusterId,
             application.getJobId(),
             customSavepoint,
-            application.getK8sNamespace());
+            namespace);
 
     CompletableFuture<SavepointResponse> savepointFuture =
         CompletableFuture.supplyAsync(
