@@ -124,7 +124,19 @@ class ManagedFlinkReconciler {
     if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
       return;
     }
-    if (olderInstance(job, state)) {
+    boolean hasInstance = state.getInstanceId() != null && !state.getInstanceId().isBlank();
+    if (!hasInstance && job.get("current_run_id") != null) {
+      Map<String, Object> current =
+          store.find(
+              "select run_state from t_flink_managed_run where app_id=? and id=?",
+              app,
+              job.get("current_run_id"));
+      if (current == null || !TERMINAL.contains(text(current, "run_state"))) {
+        recordReadFailure(job, ReadStatus.STALE, 0, now);
+        return;
+      }
+    }
+    if (hasInstance && olderInstance(job, state)) {
       if (!TERMINAL.contains(state.getRunState())) {
         recordReadFailure(job, ReadStatus.STALE, 0, now);
       }
@@ -148,7 +160,7 @@ class ManagedFlinkReconciler {
             now,
             now + OBSERVE_INTERVAL_MS,
             app);
-    if (state.getInstanceId() != null && !state.getInstanceId().trim().isEmpty()) {
+    if (hasInstance) {
       projectRun(app, state, now);
     }
   }
@@ -184,7 +196,7 @@ class ManagedFlinkReconciler {
   }
 
   private boolean olderInstance(Map<String, Object> job, CloudState state) {
-    if (state.getInstanceId() == null || job.get("current_run_id") == null) {
+    if (job.get("current_run_id") == null) {
       return false;
     }
     Map<String, Object> active =
@@ -227,12 +239,27 @@ class ManagedFlinkReconciler {
     Long endedAt = ended ? now : null;
     Map<String, Object> row =
         store.find(
-            "select id,ended_at from t_flink_managed_run "
+            "select id,ended_at,runtime_application_id from t_flink_managed_run "
                 + "where app_id=? and provider_instance_id=?",
             app,
             instance);
     long started = state.getStartedAt() > 0 ? state.getStartedAt() : now;
     String run = row == null ? id() : text(row, "id");
+    String runtimeId = state.getRuntimeId();
+    if (runtimeId != null && runtimeId.isBlank()) {
+      runtimeId = null;
+    }
+    if (row != null && runtimeId != null) {
+      String recorded = text(row, "runtime_application_id");
+      if (recorded == null || recorded.isBlank()) {
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_run set runtime_application_id=? where id=?",
+                runtimeId,
+                run);
+      }
+    }
     if (row == null) {
       // Job head revision is insufficient evidence for the version of an external instance.
       store
@@ -244,7 +271,7 @@ class ManagedFlinkReconciler {
               run,
               app,
               instance,
-              state.getRuntimeId(),
+              runtimeId,
               runState,
               state.getRunState(),
               started,

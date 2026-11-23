@@ -123,6 +123,20 @@ class VolcengineInstanceHistoryTest {
   }
 
   @Test
+  void rejectsAnInstanceRepeatedAcrossTwoNonHeadPages() {
+    Fixture fixture =
+        new Fixture(
+            page -> {
+              if (page == 3) {
+                return history(page, 101, 200, 1, "RUNNING");
+              }
+              return history(page, 101, 101 + (page - 1) * 50, 50);
+            });
+    assertThat(fixture.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
+    assertThat(fixture.requestedPages).containsExactly(1, 2, 3);
+  }
+
+  @Test
   void propagatesThrottlingAuthorizationAndRetryAfterThroughEveryRead() {
     long now = System.currentTimeMillis();
     Fixture throttled =

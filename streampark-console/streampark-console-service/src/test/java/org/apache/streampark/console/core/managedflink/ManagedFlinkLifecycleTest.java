@@ -583,6 +583,64 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void emptyHistoryCannotConfirmAPreviouslyObservedRunningInstance() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String version =
+        test.sql.queryForObject(
+            "select provider_version from t_flink_managed_release", String.class);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, "instance", "runtime", "RUNNING", 1000),
+        2000);
+    String current = test.jobField("current_run_id");
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, null, null, null, 0),
+        3000);
+
+    assertThat(test.jobField("current_run_id")).isEqualTo(current);
+    assertThat(test.jobField("sync_status")).isEqualTo("STALE");
+    assertThat(test.jobField("observed_at")).isEqualTo("2000");
+  }
+
+  @Test
+  void recordsRuntimeIdentityWhenItFirstAppearsAfterStartup() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String version =
+        test.sql.queryForObject(
+            "select provider_version from t_flink_managed_release", String.class);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, "instance", null, "STARTING", 1000),
+        2000);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, "instance", "runtime", "RUNNING", 1000),
+        3000);
+
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, "instance", null, "STOPPED", 1000),
+        4000);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, null, null, null, 0),
+        5000);
+
+    assertThat(test.jobField("sync_status")).isEqualTo("FRESH");
+    assertThat(
+            test.sql.queryForObject(
+                "select runtime_application_id from t_flink_managed_run where provider_instance_id=?",
+                String.class,
+                "instance"))
+        .isEqualTo("runtime");
+  }
+
+  @Test
   void olderActiveInstanceDoesNotSilentlyReplaceNewerRecordedHistory() {
     MockManagedFlinkProvider provider = new MockManagedFlinkProvider();
     Fixture test = new Fixture(provider);
