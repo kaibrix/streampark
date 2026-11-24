@@ -16,6 +16,20 @@
  */
 
 export default {
+  restart: 'Restart instance',
+  cloudLatest: 'Latest cloud checkpoint or savepoint',
+  priority: 'Scheduling priority',
+  schedulePolicy: 'Scheduling policy',
+  scheduleTimeout: 'Scheduling timeout (seconds)',
+  submitInstance: 'Submit instance with the published configuration',
+  cloudJob: 'Cloud job',
+  readCloud: 'Read cloud job',
+  startMethods: 'Available start methods',
+  prevPage: 'Previous page',
+  nextPage: 'Next page',
+  processingMode: 'Processing mode',
+  streaming: 'Streaming',
+  batch: 'Batch',
   configuration: 'Flink configuration (one key=value per line)',
   invalidConfiguration: 'Enter each configuration key once in key=value format.',
   loadMetrics: 'Load instance metrics',

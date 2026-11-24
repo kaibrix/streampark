@@ -22,6 +22,7 @@
     Drawer,
     Form,
     Input,
+    InputNumber,
     List,
     Popconfirm,
     Select,
@@ -67,6 +68,23 @@
   const savedConfigurationText = ref('');
   const environment = ref<Environment>();
   const capabilities = ref<Capabilities>({});
+  const cloud = ref<{
+    status: string;
+    jobId?: string;
+    jobType?: string;
+    startMethods?: string[];
+    instances?: { Id: string; State: string; StartTime: string }[];
+    savepoints?: { SavepointId: string; Status: string; CreateTime: string }[];
+    page?: number;
+    hasNext?: boolean;
+  }>();
+
+  function readCloud(page = 1) {
+    void action(async () => {
+      cloud.value = undefined;
+      cloud.value = await managedGet(base + '/cloud', { page });
+    });
+  }
   const releases = ref<Release[]>([]);
   const runs = ref<Run[]>([]);
   const diagnosticRun = ref<string>();
@@ -94,9 +112,12 @@
   const snapshots = ref<Snapshot[]>([]);
   const operations = ref<Operation[]>([]);
   const selected = ref<Operation>();
-  const restore = ref<'FROM_NEW' | 'FROM_LATEST' | 'FROM_SNAPSHOT'>('FROM_NEW');
+  const restore = ref<'FROM_NEW' | 'FROM_LATEST' | 'FROM_CLOUD_LATEST' | 'FROM_SNAPSHOT'>(
+    'FROM_NEW',
+  );
   const snapshotId = ref<string>();
   const fresh = ref(false);
+  const submitInstance = ref(false);
   const sourceReleaseId = ref<string>();
   const busy = ref(false);
   const error = ref('');
@@ -194,6 +215,12 @@
     } finally {
       busy.value = false;
     }
+  }
+
+  function changeSchedule(policy: Spec['schedulePolicy']) {
+    if (!spec.value) return;
+    spec.value.schedulePolicy = policy;
+    if (policy === 'DRF') delete spec.value.scheduleTimeout;
   }
 
   function draftContents() {
@@ -356,6 +383,7 @@
       <Space class="mb-4" wrap>
         <Tag>{{ environment?.name }}</Tag>
         <Tag>{{ job.engineRef }}</Tag>
+        <Tag>{{ t(spec.batchMode ? 'managedFlink.batch' : 'managedFlink.streaming') }}</Tag>
         <Tag>{{ job.syncStatus }}</Tag>
         <Tag>{{ run?.run_state || 'NOT_STARTED' }}</Tag>
         <span v-if="job.observedAt && Number(job.observedAt) > 0">
@@ -410,6 +438,36 @@
               <FormItem :label="t('managedFlink.args')"
                 ><Textarea v-model:value="argText" :rows="4"
               /></FormItem>
+            </template>
+            <template v-if="environment?.provider === 'volcengine'">
+              <FormItem :label="t('managedFlink.priority')">
+                <InputNumber
+                  v-model:value="spec.priority"
+                  :min="0"
+                  :precision="0"
+                  placeholder="1"
+                />
+              </FormItem>
+              <FormItem :label="t('managedFlink.schedulePolicy')">
+                <Select
+                  :value="spec.schedulePolicy || (spec.batchMode ? 'DRF' : 'GANG')"
+                  :options="
+                    (spec.batchMode ? ['DRF'] : ['GANG', 'DRF']).map((value) => ({ value }))
+                  "
+                  @change="changeSchedule"
+                />
+              </FormItem>
+              <FormItem
+                v-if="!spec.batchMode && spec.schedulePolicy !== 'DRF'"
+                :label="t('managedFlink.scheduleTimeout')"
+              >
+                <InputNumber
+                  v-model:value="spec.scheduleTimeout"
+                  :min="0"
+                  :precision="0"
+                  placeholder="60"
+                />
+              </FormItem>
             </template>
             <FormItem :label="t('managedFlink.configuration')">
               <Textarea
@@ -466,12 +524,20 @@
                   disabled: !can('RESTORE_FROM_LATEST'),
                 },
                 {
+                  value: 'FROM_CLOUD_LATEST',
+                  label: t('managedFlink.cloudLatest'),
+                  disabled: !can('RESTORE_FROM_CLOUD_LATEST'),
+                },
+                {
                   value: 'FROM_SNAPSHOT',
                   label: t('managedFlink.snapshot'),
                   disabled: !can('RESTORE_FROM_SNAPSHOT'),
                 },
               ]"
             />
+            <Checkbox v-if="can('SUBMIT_INSTANCE')" v-model:checked="submitInstance">{{
+              t('managedFlink.submitInstance')
+            }}</Checkbox>
             <Checkbox v-if="restore === 'FROM_NEW' && run" v-model:checked="fresh">{{
               t('managedFlink.confirmNew')
             }}</Checkbox>
@@ -487,12 +553,29 @@
               @click="
                 command('start', {
                   expectedReleaseId: job?.activeReleaseId,
+                  submitInstance,
                   restore: { mode: restore, snapshotId, confirmedNew: fresh },
                 })
               "
             >
               {{ t('managedFlink.start') }}
             </Button>
+            <Popconfirm
+              v-if="running && hasPermission('app:cancel') && hasPermission('app:start')"
+              :title="t('managedFlink.restart')"
+              @confirm="
+                command('restart', {
+                  expectedRunId: run?.id,
+                  expectedReleaseId: job?.activeReleaseId,
+                  submitInstance,
+                  restore: { mode: restore, snapshotId, confirmedNew: fresh },
+                })
+              "
+            >
+              <Button :disabled="lock || !can('START') || !can('STOP')">{{
+                t('managedFlink.restart')
+              }}</Button>
+            </Popconfirm>
             <Popconfirm
               :title="t('managedFlink.stop')"
               :disabled="lock"
@@ -578,6 +661,48 @@
               </ListItem>
             </template>
           </List>
+        </TabPane>
+        <TabPane
+          v-if="environment?.provider === 'volcengine'"
+          key="cloud"
+          :tab="t('managedFlink.cloudJob')"
+        >
+          <Button :loading="busy" :disabled="!job.cloudBound" @click="readCloud()">{{
+            t('managedFlink.readCloud')
+          }}</Button>
+          <Alert
+            v-if="cloud && cloud.status !== 'AVAILABLE'"
+            :message="cloud.status"
+            type="warning"
+          />
+          <template v-if="cloud?.status === 'AVAILABLE'">
+            <p>{{ cloud.jobId }} · {{ cloud.jobType }}</p>
+            <p>{{ t('managedFlink.startMethods') }} · {{ cloud.startMethods?.join(', ') }}</p>
+            <List :header="t('managedFlink.runs')" :data-source="cloud.instances">
+              <template #renderItem="{ item }"
+                ><ListItem
+                  >{{ item.Id }} · {{ item.State }} · {{ item.StartTime }}</ListItem
+                ></template
+              >
+            </List>
+            <Space>
+              <Button
+                :disabled="!cloud.page || cloud.page === 1"
+                @click="readCloud((cloud.page || 1) - 1)"
+                >{{ t('managedFlink.prevPage') }}</Button
+              >
+              <Button :disabled="!cloud.hasNext" @click="readCloud((cloud.page || 1) + 1)">{{
+                t('managedFlink.nextPage')
+              }}</Button>
+            </Space>
+            <List :header="t('managedFlink.snapshots')" :data-source="cloud.savepoints">
+              <template #renderItem="{ item }"
+                ><ListItem
+                  >{{ item.SavepointId }} · {{ item.Status }} · {{ item.CreateTime }}</ListItem
+                ></template
+              >
+            </List>
+          </template>
         </TabPane>
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <Space

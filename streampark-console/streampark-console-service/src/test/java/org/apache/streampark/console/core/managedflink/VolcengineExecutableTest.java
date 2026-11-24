@@ -125,6 +125,26 @@ class VolcengineExecutableTest {
   }
 
   @Test
+  void batchDraftsPreserveModeAndNonDefaultResources() {
+    for (JobType type : JobType.values()) {
+      OperationStep step = step("FLINK_VERSION_1_17", type);
+      Spec spec = step.getCommand().getSpec();
+      spec.setBatchMode(true);
+      spec.getConfiguration().put("parallelism.default", "2");
+      spec.getConfiguration().put("kubernetes.taskmanager.cpu", "1.5");
+      assertThat(VolcengineExecutable.supportedConfiguration(spec)).isTrue();
+      assertThat(VolcengineExecutable.schedulePolicy(spec)).isEqualTo("DRF");
+      JsonObject draft = new JsonObject();
+      draft.addProperty("EngineVersion", step.getCommand().getEngineRef());
+      draft.addProperty("JobType", "FLINK_BATCH_" + type.name());
+      VolcengineExecutable.writeDraft(draft, step);
+      assertThat(VolcengineExecutable.matches(draft, step, true)).isTrue();
+      spec.setBatchMode(false);
+      assertThat(VolcengineExecutable.matches(draft, step, true)).isFalse();
+    }
+  }
+
+  @Test
   void rejectsMalformedVolcengineSqlGlobalParameters() {
     Spec spec = step("FLINK_VERSION_1_17", JobType.SQL).getCommand().getSpec();
     for (String encoded : Arrays.asList("run", "run:", "run:one,run:two", "run:one,two", "a:b:c")) {

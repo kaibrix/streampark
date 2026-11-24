@@ -47,7 +47,13 @@
   const message = ref('');
   const environments = ref<Environment[]>([]);
   const connections = ref<{ id: string; name: string }[]>([]);
-  const job = reactive({ name: '', environmentId: '', type: 'SQL' as Spec['type'], sql: '' });
+  const job = reactive({
+    name: '',
+    environmentId: '',
+    type: 'SQL' as Spec['type'],
+    batchMode: false,
+    sql: '',
+  });
   const connection = reactive({
     name: '',
     provider: 'volcengine',
@@ -136,6 +142,7 @@
   function create() {
     void run(async () => {
       const spec: Spec = { type: job.type, args: [], configuration: {} };
+      if (job.batchMode) spec.batchMode = true;
       if (job.type === 'SQL') spec.sql = job.sql;
       const appId = await managedPost<string>('/apps', {
         name: job.name,
@@ -168,6 +175,15 @@
         </FormItem>
         <FormItem :label="t('managedFlink.type')">
           <RadioGroup v-model:value="job.type" :options="['SQL', 'JAR']" />
+        </FormItem>
+        <FormItem :label="t('managedFlink.processingMode')">
+          <RadioGroup
+            v-model:value="job.batchMode"
+            :options="[
+              { value: false, label: t('managedFlink.streaming') },
+              { value: true, label: t('managedFlink.batch') },
+            ]"
+          />
         </FormItem>
         <FormItem v-if="job.type === 'SQL'" label="SQL">
           <Textarea v-model:value="job.sql" :rows="8" />

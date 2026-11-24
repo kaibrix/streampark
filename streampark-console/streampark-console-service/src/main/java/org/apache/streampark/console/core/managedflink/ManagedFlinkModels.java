@@ -42,6 +42,7 @@ public final class ManagedFlinkModels {
   public enum CommandType {
     PUBLISH,
     ROLLBACK,
+    RESTART,
     START,
     STOP,
     SNAPSHOT
@@ -61,6 +62,7 @@ public final class ManagedFlinkModels {
   public enum RestoreMode {
     FROM_NEW,
     FROM_LATEST,
+    FROM_CLOUD_LATEST,
     FROM_SNAPSHOT
   }
 
@@ -143,6 +145,19 @@ public final class ManagedFlinkModels {
   @Data
   public static class Spec {
     private JobType type;
+
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private boolean batchMode;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Integer priority;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String schedulePolicy;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private Integer scheduleTimeout;
+
     private String sql;
     private String artifactId;
 
@@ -169,6 +184,10 @@ public final class ManagedFlinkModels {
     private String sourceReleaseId;
     private String expectedRunId;
     private Restore restore;
+
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private boolean submitInstance;
+
     private String mode;
     private String description;
   }

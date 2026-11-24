@@ -597,12 +597,13 @@ class ManagedFlinkWorker {
       Map<String, Object> job, OperationStep step, Observation result, String release, long now) {
     String runState = result.getRunState();
     boolean running = "RUNNING".equals(runState);
-    if ((!running && !"FAILED".equals(runState))
+    boolean failed = "FAILED".equals(runState);
+    if ((!running && !failed && !"FINISHED".equals(runState))
         || !hasId(result.getInstanceId(), 191)
         || !hasId(step.getProviderJobId(), 191)
         || !step.getProviderJobId().equals(result.getJobId())
         || !Objects.equals(step.getCommand().getProviderVersion(), result.getVersion())
-        || (running
+        || (!failed
             && !Objects.equals(step.getCommand().getRestoreRef(), result.getRestoredFrom()))) {
       return false;
     }
@@ -636,7 +637,7 @@ class ManagedFlinkWorker {
         .jdbc()
         .update(
             "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
-            running ? FlinkAppState.RUNNING.getValue() : FlinkAppState.FAILED.getValue(),
+            FlinkAppState.of(runState).getValue(),
             new Date(now),
             running ? null : new Date(now),
             app);

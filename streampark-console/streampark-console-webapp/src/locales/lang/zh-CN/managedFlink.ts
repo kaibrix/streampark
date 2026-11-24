@@ -16,6 +16,20 @@
  */
 
 export default {
+  restart: '重启实例',
+  cloudLatest: '云端最新状态（Checkpoint 或 Savepoint）',
+  priority: '调度优先级',
+  schedulePolicy: '调度策略',
+  scheduleTimeout: '调度超时（秒）',
+  submitInstance: '使用已发布配置提交实例',
+  cloudJob: '云端作业',
+  readCloud: '查询云端作业',
+  startMethods: '可用启动方式',
+  prevPage: '上一页',
+  nextPage: '下一页',
+  processingMode: '计算模式',
+  streaming: '流式',
+  batch: '批式',
   configuration: 'Flink 配置（每行一条 key=value）',
   invalidConfiguration: '请使用 key=value 格式，每个配置键只能填写一次。',
   loadMetrics: '加载实例指标',

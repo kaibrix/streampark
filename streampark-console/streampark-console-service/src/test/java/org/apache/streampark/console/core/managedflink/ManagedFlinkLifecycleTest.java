@@ -369,6 +369,44 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void restartBindsTheOldInstanceAndRecordsFastCompletionOfItsReplacement() {
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation observe(Context context, OperationStep step, Observation ack) {
+            Observation result = super.observe(context, step, ack);
+            if (step.getAction() == Action.START
+                && step.getCommand().getProviderInstance() != null) {
+              result.setRunState("FINISHED");
+            }
+            return result;
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    Command command = new Command();
+    command.setExpectedReleaseId(test.jobField("active_release_id"));
+    command.setRestore(restore);
+    test.complete(test.enqueue(CommandType.START, "start", command));
+    String old = test.jobField("current_run_id");
+    command.setExpectedRunId(old);
+    restore.setConfirmedNew(true);
+    test.complete(test.enqueue(CommandType.RESTART, "restart", command));
+    assertThat(
+            test.sql.queryForObject(
+                "select run_state from t_flink_managed_run where id=?", String.class, old))
+        .isEqualTo("STOPPED");
+    assertThat(
+            test.sql.queryForObject(
+                "select run_state from t_flink_managed_run where id=?",
+                String.class,
+                test.jobField("current_run_id")))
+        .isEqualTo("FINISHED");
+  }
+
+  @Test
   void confirmedStartupFailureKeepsRunEvidenceAndShowsFailedStep() {
     MockManagedFlinkProvider provider =
         new MockManagedFlinkProvider() {

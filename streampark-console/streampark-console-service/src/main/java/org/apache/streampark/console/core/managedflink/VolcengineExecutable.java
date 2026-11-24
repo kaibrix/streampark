@@ -43,8 +43,27 @@ final class VolcengineExecutable {
   private static final String RELEASE_OPTION = "pipeline.name";
   private static final String BASE64_ARGS = "args.base64.enabled";
 
-  static String providerType(JobType type) {
-    return type == JobType.JAR ? "FLINK_STREAMING_JAR" : "FLINK_STREAMING_SQL";
+  static String providerType(Spec spec) {
+    return (spec.isBatchMode() ? "FLINK_BATCH_" : "FLINK_STREAMING_") + spec.getType().name();
+  }
+
+  static String schedulePolicy(Spec spec) {
+    return spec.getSchedulePolicy() == null
+        ? (spec.isBatchMode() ? "DRF" : "GANG")
+        : spec.getSchedulePolicy();
+  }
+
+  static boolean matchesScheduling(JsonObject remote, Spec spec) {
+    if (remote == null) {
+      return false;
+    }
+    JsonObject deployment = VolcengineOpenApi.object(remote, "DeployRequest");
+    return (spec.getPriority() == null
+            || spec.getPriority().toString().equals(text(deployment, "Priority")))
+        && ((!spec.isBatchMode() && spec.getSchedulePolicy() == null)
+            || schedulePolicy(spec).equals(text(deployment, "SchedulePolicy")))
+        && (spec.getScheduleTimeout() == null
+            || spec.getScheduleTimeout().toString().equals(text(deployment, "ScheduleTimeout")));
   }
 
   static JsonObject resources() {
@@ -98,7 +117,7 @@ final class VolcengineExecutable {
               String key = entry.getKey();
               String value = entry.getValue();
               if (permittedResources.has(key)) {
-                return permittedResources.get(key).getAsString().equals(value);
+                return ManagedFlinkJobs.validRuntimeSetting(key, value);
               }
               if (key.startsWith("execution.checkpointing.")) {
                 return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
@@ -173,7 +192,7 @@ final class VolcengineExecutable {
       return false;
     }
     Spec spec = step.getCommand().getSpec();
-    if (!Objects.equals(providerType(spec.getType()), text(remote, "JobType"))
+    if (!Objects.equals(providerType(spec), text(remote, "JobType"))
         || !Objects.equals(step.getCommand().getEngineRef(), text(remote, "EngineVersion"))) {
       return false;
     }

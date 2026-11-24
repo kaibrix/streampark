@@ -111,7 +111,25 @@ class VolcengineDispatchTest {
             "GetCallerIdentity", "GetGWSApplication", "GetGWSApplicationDraft", LAST_READ, START);
   }
 
+  @Test
+  void publicInstanceSubmissionSendsFrozenSqlAndExplicitRestoreStrategy() {
+    Fixture fixture = new Fixture(null);
+    fixture.step.getCommand().getRequest().setSubmitInstance(true);
+    Observation ack = fixture.provider.dispatch(fixture.context, fixture.step, () -> true);
+    assertThat(ack.getInstanceId()).isEqualTo("4");
+    assertThat(fixture.actions).endsWith("StartApplicationInstance").doesNotContain(START);
+    JsonObject app = fixture.submitted.getAsJsonObject("App");
+    assertThat(app.get("ProjectId").getAsString()).isEqualTo("project");
+    assertThat(app.get("SqlText").getAsString()).isEqualTo("SELECT 1");
+    assertThat(app.get("JobType").getAsString()).isEqualTo("FLINK_STREAMING_SQL");
+    assertThat(app.getAsJsonObject("DeployRequest").get("Queue").getAsString()).isEqualTo("pool");
+    assertThat(
+            fixture.submitted.getAsJsonObject("RestoreStrategy").get("SavepointId").getAsString())
+        .isEqualTo(SAVEPOINT);
+  }
+
   private static final class Fixture {
+    private JsonObject submitted;
     private final Context context;
     private final OperationStep step;
     private final VolcengineManagedFlinkProvider provider;
@@ -158,6 +176,13 @@ class VolcengineDispatchTest {
               chain -> {
                 String action = chain.request().httpUrl().queryParameter("Action");
                 actions.add(action);
+                if ("StartApplicationInstance".equals(action)) {
+                  Buffer body = new Buffer();
+                  chain.request().body().writeTo(body);
+                  submitted = object(body.readUtf8());
+                  assertThat(chain.request().httpUrl().queryParameter("Version"))
+                      .isEqualTo("2025-01-01");
+                }
                 if (START.equals(action)) {
                   Buffer body = new Buffer();
                   chain.request().body().writeTo(body);
@@ -227,6 +252,7 @@ class VolcengineDispatchTest {
               "{\"SavepointInfos\":[{\"SavepointId\":\""
                   + SAVEPOINT
                   + "\",\"Status\":\"AVAILABLE\",\"SavepointPath\":\"fixture-path\"}]}");
+        case "StartApplicationInstance":
         case START:
           return object("{\"InstanceId\":\"4\"}");
         default:

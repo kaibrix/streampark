@@ -98,6 +98,12 @@ public class ManagedFlinkJobs {
         specArtifactId(input.getSpec()) == null,
         HttpStatus.BAD_REQUEST,
         "Create the job before attaching an artifact");
+    if ("volcengine".equals(text(conn, "provider"))) {
+      check(
+          name.matches("[a-zA-Z0-9](?:[a-zA-Z0-9_.-]{0,46}[a-zA-Z0-9])?"),
+          HttpStatus.BAD_REQUEST,
+          "Volcengine job names must be 1-48 characters and end in a letter or digit");
+    }
     Application app = new Application();
     app.setJobName(name);
     app.setTeamId(team);
@@ -146,7 +152,10 @@ public class ManagedFlinkJobs {
     Spec spec = input.getSpec();
     validate(spec, false);
     Spec old = store.decode(text(job, "draft_spec"), Spec.class);
-    check(old.getType() == spec.getType(), HttpStatus.CONFLICT, "Job type is fixed");
+    check(
+        old.getType() == spec.getType() && old.isBatchMode() == spec.isBatchMode(),
+        HttpStatus.CONFLICT,
+        "Job type is fixed");
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
       artifact(app, artifactId);
@@ -191,6 +200,16 @@ public class ManagedFlinkJobs {
     if (artifactId != null) {
       artifact(app, artifactId);
     }
+  }
+
+  Map<String, Object> cloudJob(long team, long app, int page) {
+    check(page > 0, HttpStatus.BAD_REQUEST, "Invalid instance page");
+    Map<String, Object> job = job(team, app, false);
+    Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> connection = catalog.connection(team, text(env, "connection_id"));
+    return catalog
+        .provider(text(connection, "provider"))
+        .cloudJob(catalog.context(connection, env, null), text(job, "provider_job_id"), page);
   }
 
   Map<String, Object> diagnostics(
@@ -245,6 +264,9 @@ public class ManagedFlinkJobs {
   @Transactional(isolation = Isolation.READ_COMMITTED)
   public String enqueue(long team, long app, CommandType type, String key, Command cmd) {
     long actor = catalog.authorize(team, permission(type));
+    if (type == CommandType.RESTART) {
+      catalog.authorize(team, "app:cancel");
+    }
     key = required(key, 128);
     Map<String, Object> job = job(team, app, true);
     String requestHash = hash(type.name() + ":" + store.encode(cmd));
@@ -290,8 +312,17 @@ public class ManagedFlinkJobs {
     Map<String, Object> current = currentRun(job);
     if (type == CommandType.PUBLISH || type == CommandType.ROLLBACK) {
       release = freezeRelease(app, type, cmd, job, env, provider, capabilities, frozen, current);
-    } else if (type == CommandType.START) {
-      prepareStart(app, job, env, capabilities, cmd, frozen, release, current);
+    } else if (type == CommandType.START || type == CommandType.RESTART) {
+      boolean restart = type == CommandType.RESTART;
+      if (restart) {
+        capability(capabilities, "STOP");
+        check(
+            isActive(current) && Objects.equals(cmd.getExpectedRunId(), text(current, "id")),
+            HttpStatus.CONFLICT,
+            "Expected the current instance to restart");
+        frozen.setProviderInstance(text(current, "provider_instance_id"));
+      }
+      prepareStart(app, restart, env, capabilities, cmd, frozen, release, current);
     } else {
       prepareRunAction(team, type, cmd, capabilities, frozen, current);
     }
@@ -423,7 +454,7 @@ public class ManagedFlinkJobs {
 
   private void prepareStart(
       long app,
-      Map<String, Object> job,
+      boolean restart,
       Map<String, Object> env,
       Map<String, String> capabilities,
       Command cmd,
@@ -434,9 +465,9 @@ public class ManagedFlinkJobs {
     check(
         release != null
             && Objects.equals(release, cmd.getExpectedReleaseId())
-            && !isActive(current),
+            && (restart || !isActive(current)),
         HttpStatus.CONFLICT,
-        "Expected published release with no active instance");
+        "Expected published release and matching instance state");
     Map<String, Object> version = release(app, release);
     check(
         "PUBLISHED".equals(text(version, "status")), HttpStatus.CONFLICT, "Release is unverified");
@@ -446,11 +477,16 @@ public class ManagedFlinkJobs {
         HttpStatus.BAD_REQUEST,
         "Choose a restore mode");
     capability(capabilities, "START");
+    if (cmd.isSubmitInstance()) {
+      capability(capabilities, "SUBMIT_INSTANCE");
+    }
     if (restore.getMode() == RestoreMode.FROM_NEW) {
       check(
           current == null || restore.isConfirmedNew(),
           HttpStatus.UNPROCESSABLE_ENTITY,
           "Confirm a fresh start for a previously started job");
+    } else if (restore.getMode() == RestoreMode.FROM_CLOUD_LATEST) {
+      capability(capabilities, "RESTORE_FROM_CLOUD_LATEST");
     } else if (restore.getMode() == RestoreMode.FROM_SNAPSHOT) {
       capability(capabilities, "RESTORE_FROM_SNAPSHOT");
       Map<String, Object> snapshot =
@@ -489,7 +525,10 @@ public class ManagedFlinkJobs {
     }
     frozen.setSpecHash(text(version, "spec_hash"));
     frozen.setProviderVersion(text(version, "provider_version"));
-    frozen.setActions(Collections.singletonList(Action.START));
+    frozen.setActions(
+        restart
+            ? Arrays.asList(Action.STOP, Action.START)
+            : Collections.singletonList(Action.START));
   }
 
   private void prepareRunAction(
@@ -657,6 +696,7 @@ public class ManagedFlinkJobs {
 
   private String permission(CommandType type) {
     switch (type) {
+      case RESTART:
       case START:
         return "app:start";
       case STOP:
@@ -677,6 +717,20 @@ public class ManagedFlinkJobs {
         spec != null && spec.getType() != null,
         HttpStatus.BAD_REQUEST,
         "Expected a SQL or JAR definition");
+    check(
+        spec.getPriority() == null || spec.getPriority() >= 0,
+        HttpStatus.BAD_REQUEST,
+        "Invalid scheduling priority");
+    String policy = VolcengineExecutable.schedulePolicy(spec);
+    check(
+        "DRF".equals(policy) || ("GANG".equals(policy) && !spec.isBatchMode()),
+        HttpStatus.BAD_REQUEST,
+        "Invalid scheduling policy for the processing mode");
+    check(
+        spec.getScheduleTimeout() == null
+            || ("GANG".equals(policy) && spec.getScheduleTimeout() >= 0),
+        HttpStatus.BAD_REQUEST,
+        "Only GANG scheduling accepts a non-negative timeout");
     if (spec.getType() == JobType.SQL) {
       if (complete) {
         required(spec.getSql(), 1_000_000);
@@ -710,6 +764,8 @@ public class ManagedFlinkJobs {
             "execution.checkpointing.interval",
             "execution.checkpointing.timeout",
             "taskmanager.numberOfTaskSlots",
+            "kubernetes.jobmanager.cpu",
+            "kubernetes.taskmanager.cpu",
             "jobmanager.memory.process.size",
             "taskmanager.memory.process.size");
     check(
@@ -736,11 +792,15 @@ public class ManagedFlinkJobs {
         "Unsupported Flink configuration");
   }
 
-  private boolean validRuntimeSetting(String key, String value) {
+  static boolean validRuntimeSetting(String key, String value) {
     switch (key) {
       case "parallelism.default":
       case "taskmanager.numberOfTaskSlots":
         return value.matches("[1-9][0-9]{0,8}");
+      case "kubernetes.jobmanager.cpu":
+      case "kubernetes.taskmanager.cpu":
+        return value.matches("(?:[1-9][0-9]{0,3}(?:\\.[0-9]{1,3})?|0\\.[0-9]{1,3})")
+            && Double.parseDouble(value) > 0;
       case "jobmanager.memory.process.size":
       case "taskmanager.memory.process.size":
         return value.matches("(?i)[1-9][0-9]{0,8}\\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)");

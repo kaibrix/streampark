@@ -238,6 +238,15 @@ public class ManagedFlinkController {
             "created_at"));
   }
 
+  @GetMapping("/apps/{appId}/cloud")
+  Body<Map<String, Object>> cloudJob(
+      @RequestParam long teamId,
+      @PathVariable long appId,
+      @RequestParam(defaultValue = "1") int page) {
+    requireRead(teamId, appId);
+    return ok(jobs.cloudJob(teamId, appId, page));
+  }
+
   @GetMapping("/apps/{appId}/runs")
   Body<List<Map<String, Object>>> runs(
       @RequestParam long teamId,
@@ -326,7 +335,7 @@ public class ManagedFlinkController {
     return ok(options);
   }
 
-  @PostMapping("/apps/{appId}/{action:publish|rollback|start|stop|snapshots}")
+  @PostMapping("/apps/{appId}/{action:publish|rollback|start|restart|stop|snapshots}")
   ResponseEntity<Body<Map<String, Object>>> command(
       @RequestParam long teamId,
       @PathVariable long appId,

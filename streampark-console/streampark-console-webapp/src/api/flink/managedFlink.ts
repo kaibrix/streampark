@@ -20,6 +20,10 @@ import { getUserTeamId } from '/@/utils';
 
 export interface Spec {
   type: 'SQL' | 'JAR';
+  batchMode?: boolean;
+  priority?: number;
+  schedulePolicy?: 'DRF' | 'GANG';
+  scheduleTimeout?: number;
   sql?: string;
   artifactId?: string;
   udfArtifactId?: string;
