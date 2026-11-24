@@ -664,20 +664,67 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
   }
 
+  private Reply validateSql(
+      VolcengineOpenApi api, Target target, String draftId, ManagedFlinkModels.Spec spec)
+      throws IOException {
+    return api.call(
+        "ValidateGWSApplicationDraft",
+        GWS_VERSION,
+        scope(target),
+        fields(
+            "Id",
+            draftId,
+            "JobType",
+            VolcengineExecutable.providerType(spec),
+            "SqlText",
+            spec.getSql()));
+  }
+
+  @Override
+  public String validateCloudSql(Context context, String draftId, ManagedFlinkModels.Spec spec) {
+    try {
+      VolcengineOpenApi api = client(context);
+      if (api == null) {
+        return "UNAVAILABLE";
+      }
+      Reply identity = api.identity();
+      if (!identity.ok() || !same(identity.data(), "AccountId", context.getAccountRef())) {
+        return "UNAVAILABLE";
+      }
+      JsonObject record = draft(api, context.getTarget(), draftId);
+      if (!same(record, "JobType", VolcengineExecutable.providerType(spec))
+          || !same(record, "EngineVersion", context.getTarget().getEngineRef())) {
+        return "UNAVAILABLE";
+      }
+      return sqlCheckStatus(validateSql(api, context.getTarget(), draftId, spec));
+    } catch (IOException | RuntimeException e) {
+      return "UNAVAILABLE";
+    }
+  }
+
+  static String sqlCheckStatus(Reply reply) {
+    JsonElement valid = reply.data().get("Data");
+    if (!reply.ok()
+        || valid == null
+        || !valid.isJsonPrimitive()
+        || !valid.getAsJsonPrimitive().isBoolean()) {
+      return "UNAVAILABLE";
+    }
+    if (valid.getAsBoolean()) {
+      return "VALID";
+    }
+    if (rejectsSqlSyntax(reply)) {
+      return "SYNTAX_ERROR";
+    }
+    return "SQL containing user-defined functions must be validated with deep-validate."
+            .equals(text(reply.data(), "Message"))
+        ? "DEEP_CHECK_REQUIRED"
+        : "CHECK_FAILED";
+  }
+
   private Observation sqlSyntaxFailure(VolcengineOpenApi api, Target target, OperationStep step) {
     try {
-      Reply validation =
-          api.call(
-              "ValidateGWSApplicationDraft",
-              GWS_VERSION,
-              scope(target),
-              fields(
-                  "Id",
-                  step.getDraftId(),
-                  "JobType",
-                  VolcengineExecutable.providerType(step.getCommand().getSpec()),
-                  "SqlText",
-                  step.getCommand().getSpec().getSql()));
+      Reply validation = validateSql(api, target, step.getDraftId(), step.getCommand().getSpec());
       if (rejectsSqlSyntax(validation)) {
         Observation failure = rejected("SQL_SYNTAX_REJECTED");
         failure.setRequestId(validation.requestId);

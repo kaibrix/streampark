@@ -52,6 +52,10 @@ public interface ManagedFlinkProvider {
     return capabilities(context);
   }
 
+  default String validateCloudSql(Context context, String draftId, Spec spec) {
+    return "UNAVAILABLE";
+  }
+
   default String specIssue(Spec spec) {
     return null;
   }

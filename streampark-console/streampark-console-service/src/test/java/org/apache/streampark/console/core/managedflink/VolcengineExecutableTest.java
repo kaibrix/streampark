@@ -46,11 +46,13 @@ class VolcengineExecutableTest {
             + "org.apache.flink.sql.parser.impl.ParseException: invalid fixture SQL");
     Reply reply = new Reply(200, data, "test-request", null, true);
     assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isTrue();
+    assertThat(VolcengineManagedFlinkProvider.sqlCheckStatus(reply)).isEqualTo("SYNTAX_ERROR");
     assertThat(
             VolcengineManagedFlinkProvider.rejectsSqlSyntax(
                 new Reply(200, data, "test-request", "AccessDenied", false)))
         .isFalse();
     data.addProperty("Data", "false");
+    assertThat(VolcengineManagedFlinkProvider.sqlCheckStatus(reply)).isEqualTo("UNAVAILABLE");
     assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
     data.addProperty("Data", true);
     assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
@@ -58,7 +60,10 @@ class VolcengineExecutableTest {
     data.addProperty(
         "Message", "SQL containing user-defined functions must be validated with deep-validate.");
     assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
+    assertThat(VolcengineManagedFlinkProvider.sqlCheckStatus(reply))
+        .isEqualTo("DEEP_CHECK_REQUIRED");
     data.remove("Message");
+    assertThat(VolcengineManagedFlinkProvider.sqlCheckStatus(reply)).isEqualTo("CHECK_FAILED");
     assertThat(VolcengineManagedFlinkProvider.rejectsSqlSyntax(reply)).isFalse();
   }
 

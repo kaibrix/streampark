@@ -183,6 +183,14 @@ public class ManagedFlinkController {
     return ok(Collections.singletonMap("level", "STRUCTURAL"));
   }
 
+  @PostMapping("/apps/{appId}/validate-cloud-sql")
+  Body<Map<String, String>> validateCloudSql(
+      @RequestParam long teamId, @PathVariable long appId, @RequestBody Spec candidate) {
+    return ok(
+        Collections.singletonMap(
+            "status", jobs.validateCloudSql(teamId, appId, candidate.getSql())));
+  }
+
   @PostMapping("/apps/{appId}/artifacts")
   Body<String> upload(
       @RequestParam long teamId, @PathVariable long appId, @RequestParam MultipartFile file)

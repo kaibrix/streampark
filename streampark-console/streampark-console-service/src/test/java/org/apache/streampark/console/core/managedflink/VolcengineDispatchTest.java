@@ -158,6 +158,25 @@ class VolcengineDispatchTest {
     assertThat(fixture.actions).endsWith("GetGWSStartMethod", "CancelApplicationInstance");
   }
 
+  @Test
+  void validatesUnsavedSqlAgainstTheBoundDraftWithoutChangingTheCloudDraft() {
+    Fixture fixture = new Fixture(null);
+    Spec spec = fixture.step.getCommand().getSpec();
+    spec.setSql("SELECT 2");
+    assertThat(fixture.provider.validateCloudSql(fixture.context, "draft", spec))
+        .isEqualTo("VALID");
+    assertThat(fixture.actions)
+        .containsExactly(
+            "GetCallerIdentity", "GetGWSApplicationDraft", "ValidateGWSApplicationDraft");
+    assertThat(fixture.submitted.get("SqlText").getAsString()).isEqualTo("SELECT 2");
+    assertThat(fixture.submitted.get("Id").getAsString()).isEqualTo("draft");
+
+    fixture.actions.clear();
+    assertThat(fixture.provider.validateCloudSql(fixture.context, "different-draft", spec))
+        .isEqualTo("UNAVAILABLE");
+    assertThat(fixture.actions).doesNotContain("ValidateGWSApplicationDraft");
+  }
+
   private static final class Fixture {
     private boolean latestAvailable = true;
     private JsonObject submitted;
@@ -213,6 +232,13 @@ class VolcengineDispatchTest {
                   submitted = object(body.readUtf8());
                   assertThat(chain.request().httpUrl().queryParameter("Version"))
                       .isEqualTo("2025-01-01");
+                }
+                if ("ValidateGWSApplicationDraft".equals(action)) {
+                  Buffer body = new Buffer();
+                  chain.request().body().writeTo(body);
+                  submitted = object(body.readUtf8());
+                  assertThat(chain.request().httpUrl().queryParameter("ProjectId"))
+                      .isEqualTo("project");
                 }
                 if (START.equals(action)) {
                   Buffer body = new Buffer();
@@ -286,9 +312,13 @@ class VolcengineDispatchTest {
           return object("{\"Success\":true}");
         case "GetGWSApplication":
           return publication;
+        case "ValidateGWSApplicationDraft":
+          return object("{\"Data\":true}");
         case "GetGWSApplicationDraft":
           return object(
-              "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\"}");
+              "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\",\"JobType\":\"FLINK_STREAMING_SQL\",\"EngineVersion\":\""
+                  + ENGINE
+                  + "\"}");
         case "GetGWSStartMethod":
           return latestAvailable
               ? object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}")

@@ -205,6 +205,24 @@ public class ManagedFlinkJobs {
     }
   }
 
+  String validateCloudSql(long team, long app, String sql) {
+    catalog.authorize(team, "app:update");
+    Map<String, Object> job = job(team, app, false);
+    Spec spec = store.decode(text(job, "draft_spec"), Spec.class);
+    check(spec.getType() == JobType.SQL, HttpStatus.BAD_REQUEST, "SQL draft required");
+    required(sql, 1_000_000);
+    spec.setSql(sql);
+    String draft = text(job, "provider_draft_id");
+    if (draft == null) {
+      return "NOT_BOUND";
+    }
+    Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
+    return catalog
+        .provider(text(conn, "provider"))
+        .validateCloudSql(catalog.context(conn, env, null), draft, spec);
+  }
+
   Map<String, Object> cloudInstance(long team, long app, String instanceId) {
     Map<String, Object> job = job(team, app, false);
     Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);

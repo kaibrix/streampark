@@ -283,6 +283,15 @@
     });
   }
 
+  function validateCloudSql() {
+    void action(async () => {
+      const result = await managedPost<{ status: string }>(base + '/validate-cloud-sql', {
+        sql: spec.value?.sql,
+      });
+      feedback.value = t('managedFlink.cloudSqlResult.' + result.status);
+    });
+  }
+
   function removeJar(id: string) {
     if (!spec.value) return;
     if (spec.value.udfArtifactId === id) delete spec.value.udfArtifactId;
@@ -548,6 +557,13 @@
               <Button v-auth="'app:update'" :disabled="busy" @click="validate">{{
                 t('managedFlink.validate')
               }}</Button>
+              <Button
+                v-if="environment?.provider === 'volcengine' && spec.type === 'SQL'"
+                v-auth="'app:update'"
+                :disabled="busy || !spec.sql"
+                @click="validateCloudSql"
+                >{{ t('managedFlink.validateCloudSql') }}</Button
+              >
               <Popconfirm
                 :title="t('managedFlink.publishConfirm')"
                 :disabled="lock"
