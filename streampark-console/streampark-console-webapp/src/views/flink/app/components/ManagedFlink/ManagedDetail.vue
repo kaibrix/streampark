@@ -139,7 +139,8 @@
   const fresh = ref(false);
   const submitInstance = ref(false);
   const sourceReleaseId = ref<string>();
-  const busy = ref(false);
+  const pendingActions = ref(0);
+  const busy = computed(() => pendingActions.value > 0);
   const error = ref('');
   const feedback = ref('');
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -228,7 +229,7 @@
   }
 
   async function action(task: () => Promise<void>) {
-    busy.value = true;
+    pendingActions.value++;
     error.value = '';
     feedback.value = '';
     try {
@@ -236,7 +237,7 @@
     } catch (cause) {
       error.value = (cause as Error).message || t('managedFlink.failed');
     } finally {
-      busy.value = false;
+      pendingActions.value--;
     }
   }
 
