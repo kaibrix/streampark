@@ -506,7 +506,7 @@
                   v-model:value="spec.priority"
                   :min="0"
                   :precision="0"
-                  placeholder="1"
+                  placeholder="3"
                 />
               </FormItem>
               <FormItem :label="t('managedFlink.schedulePolicy')">

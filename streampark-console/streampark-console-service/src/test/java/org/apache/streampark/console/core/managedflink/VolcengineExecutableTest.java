@@ -132,6 +132,10 @@ class VolcengineExecutableTest {
       spec.setBatchMode(true);
       spec.getConfiguration().put("parallelism.default", "2");
       spec.getConfiguration().put("kubernetes.taskmanager.cpu", "1.5");
+      spec.getConfiguration().put("execution.checkpointing.interval", "180s");
+      spec.getConfiguration().put("restart.attempt.enable", "true");
+      spec.getConfiguration().put("restart.attempt.max.count", "3");
+      spec.getConfiguration().put("restart.attempt.interval.min", "1");
       assertThat(VolcengineExecutable.supportedConfiguration(spec)).isTrue();
       assertThat(VolcengineExecutable.schedulePolicy(spec)).isEqualTo("DRF");
       JsonObject draft = new JsonObject();

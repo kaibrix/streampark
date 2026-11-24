@@ -138,7 +138,28 @@ class VolcengineDispatchTest {
     assertThat(fixture.actions).endsWith("GetGWSStartMethod", START).doesNotContain(LAST_READ);
   }
 
+  @Test
+  void restartChecksLatestRestoreBeforeStoppingTheCurrentInstance() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand cmd = fixture.step.getCommand();
+    cmd.setActions(Arrays.asList(Action.STOP, Action.START));
+    cmd.setProviderInstance("7");
+    cmd.getRequest().getRestore().setMode(RestoreMode.FROM_CLOUD_LATEST);
+    cmd.setRestoreRef(null);
+    OperationStep stop = new OperationStep("restart", 2L, Action.STOP, cmd, "draft", "3", null);
+
+    fixture.latestAvailable = false;
+    Observation result = fixture.provider.dispatch(fixture.context, stop, () -> true);
+    assertThat(result.getCode()).isEqualTo("LATEST_STATE_UNAVAILABLE");
+    assertThat(fixture.actions).doesNotContain("CancelApplicationInstance");
+
+    fixture.latestAvailable = true;
+    fixture.provider.dispatch(fixture.context, stop, () -> true);
+    assertThat(fixture.actions).endsWith("GetGWSStartMethod", "CancelApplicationInstance");
+  }
+
   private static final class Fixture {
+    private boolean latestAvailable = true;
     private JsonObject submitted;
     private final Context context;
     private final OperationStep step;
@@ -258,13 +279,20 @@ class VolcengineDispatchTest {
       switch (action) {
         case "GetCallerIdentity":
           return object("{\"AccountId\":\"account\"}");
+        case "GetApplicationInstance":
+          return object(
+              "{\"Id\":\"7\",\"ProjectId\":\"project\",\"JobId\":\"3\",\"State\":\"RUNNING\"}");
+        case "CancelApplicationInstance":
+          return object("{\"Success\":true}");
         case "GetGWSApplication":
           return publication;
         case "GetGWSApplicationDraft":
           return object(
               "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\"}");
         case "GetGWSStartMethod":
-          return object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}");
+          return latestAvailable
+              ? object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}")
+              : object("{\"EnableStartMethods\":[]}");
         case LAST_READ:
           return object(
               "{\"SavepointInfos\":[{\"SavepointId\":\""

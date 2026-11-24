@@ -101,6 +101,9 @@ class ManagedFlinkRuntimeConfigurationTest {
     assertBadConfig(fixture, "taskmanager.numberOfTaskSlots", "0");
     assertBadConfig(fixture, "jobmanager.memory.process.size", "-1m");
     assertBadConfig(fixture, "execution.unapproved.option", "fixture");
+    assertBadConfig(fixture, "restart.attempt.enable", "maybe");
+    assertBadConfig(fixture, "restart.attempt.max.count", "-1");
+    assertBadConfig(fixture, "restart.attempt.interval.min", "2147483648");
   }
 
   @Test
@@ -219,6 +222,10 @@ class ManagedFlinkRuntimeConfigurationTest {
     Map<String, String> config = new LinkedHashMap<>();
     config.put("parallelism.default", "1");
     config.put(CHECKPOINT, "4 s");
+    config.put("execution.checkpointing.timeout", "600s");
+    config.put("restart.attempt.enable", "true");
+    config.put("restart.attempt.max.count", "3");
+    config.put("restart.attempt.interval.min", "1");
     config.put(TM_ENV, "fixture");
     config.put(JM_ENV, "fixture-jm");
     return config;

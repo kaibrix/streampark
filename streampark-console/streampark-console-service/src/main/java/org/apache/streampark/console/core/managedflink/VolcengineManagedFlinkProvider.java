@@ -590,31 +590,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                       null,
                       "Id"));
         case START:
-          for (DependencyArtifact dep : step.getCommand().getDependencies()) {
-            if (!binding.permitsArtifacts(context)) {
-              return rejected("CAPABILITY_UNVERIFIED");
-            }
-            Observation proof = artifacts.inspectDependency(context, step, dep);
-            if (proof.getOutcome() != Outcome.CONFIRMED
-                || !Objects.equals(dep.getRemoteRef(), proof.getArtifactRef())) {
-              return rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
-            }
-          }
-          if (VolcengineExecutable.artifact(step) != null) {
-            if (!binding.permitsArtifacts(context)) {
-              return rejected("CAPABILITY_UNVERIFIED");
-            }
-            Observation verified = artifacts.inspect(context, step);
-            if (verified.getOutcome() != Outcome.CONFIRMED
-                || !Objects.equals(verified.getArtifactRef(), step.getCommand().getArtifactRef())) {
-              Observation failure = rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
-              failure.setRequestId(verified.getRequestId());
-              return failure;
-            }
-          }
-          return supportedSpec(context, step)
-              ? start(api, context, step, binding.permitsSnapshots(context), permit)
-              : rejected("UNVERIFIED_SPEC");
+          return start(api, context, step, permit);
         case SNAPSHOT:
           if (!binding.permitsSnapshots(context) || !isCurrentRunning(api, target, step)) {
             return rejected("SNAPSHOT_INSTANCE_NOT_VERIFIED");
@@ -633,16 +609,15 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           JsonObject running =
               instance(
                   api, target, step.getProviderJobId(), step.getCommand().getProviderInstance());
-          if (running == null
-              || !same(running, "State", "RUNNING")
-              || application(api, target, step.getProviderJobId()) == null) {
+          JsonObject deployed = application(api, target, step.getProviderJobId());
+          if (running == null || !same(running, "State", "RUNNING") || deployed == null) {
             return rejected("INSTANCE_NOT_VERIFIED");
           }
-          if (step.getCommand().getActions().contains(ManagedFlinkModels.Action.START)
-              && step.getCommand().getRestoreRef() != null
-              && savepointPath(api, step.getProviderJobId(), step.getCommand().getRestoreRef())
-                  == null) {
-            return rejected("RESTORE_SNAPSHOT_NOT_VERIFIED");
+          if (step.getCommand().getActions().contains(ManagedFlinkModels.Action.START)) {
+            Observation rejection = checkStart(api, context, step, deployed);
+            if (rejection != null) {
+              return rejection;
+            }
           }
           JsonObject cancel = fields("InstanceId", step.getCommand().getProviderInstance());
           return write(
@@ -843,52 +818,82 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         : methods.getEnableStartMethods();
   }
 
-  private Observation start(
-      VolcengineOpenApi api,
-      Context context,
-      OperationStep step,
-      boolean snapshotEnabled,
-      BooleanSupplier permit)
+  private Observation checkStart(
+      VolcengineOpenApi api, Context context, OperationStep step, JsonObject published)
       throws IOException {
-    Target target = context.getTarget();
-    RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
-    if (mode != RestoreMode.FROM_NEW && !snapshotEnabled) {
-      return rejected("UNVERIFIED_START_CONTRACT");
+    if (!supportedSpec(context, step)) {
+      return rejected("UNVERIFIED_SPEC");
     }
-    JsonObject published = application(api, target, step.getProviderJobId());
+    for (DependencyArtifact dep : step.getCommand().getDependencies()) {
+      if (!binding.permitsArtifacts(context)) {
+        return rejected("CAPABILITY_UNVERIFIED");
+      }
+      Observation proof = artifacts.inspectDependency(context, step, dep);
+      if (proof.getOutcome() != Outcome.CONFIRMED
+          || !Objects.equals(dep.getRemoteRef(), proof.getArtifactRef())) {
+        return rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
+      }
+    }
+    if (VolcengineExecutable.artifact(step) != null) {
+      if (!binding.permitsArtifacts(context)) {
+        return rejected("CAPABILITY_UNVERIFIED");
+      }
+      Observation verified = artifacts.inspect(context, step);
+      if (verified.getOutcome() != Outcome.CONFIRMED
+          || !Objects.equals(verified.getArtifactRef(), step.getCommand().getArtifactRef())) {
+        Observation failure = rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
+        failure.setRequestId(verified.getRequestId());
+        return failure;
+      }
+    }
     if (!VolcengineExecutable.matchesScheduling(published, step.getCommand().getSpec())
         || !VolcengineExecutable.matches(published, step, false)
         || !Objects.equals(revision(published), step.getCommand().getProviderVersion())) {
       return rejected("PUBLISHED_REVISION_MISMATCH");
     }
-    JsonObject parameters =
-        fields(
-            "Id",
-            step.getProviderJobId(),
-            "Type",
-            mode == RestoreMode.FROM_NEW ? "FROM_NEW" : "FROM_SAVEPOINT");
+    if (step.getCommand().getRequest().isSubmitInstance()
+        && AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
+                context.getTarget().getEngineRef())
+            == null) {
+      return rejected("UNSUPPORTED_INSTANCE_ENGINE");
+    }
+    RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
+    if (mode == RestoreMode.FROM_NEW) {
+      return null;
+    }
+    if (!binding.permitsSnapshots(context)) {
+      return rejected("UNVERIFIED_START_CONTRACT");
+    }
     if (mode == RestoreMode.FROM_CLOUD_LATEST) {
-      if (!startMethods(api, step.getProviderJobId()).contains("FROM_LATEST")) {
-        return rejected("LATEST_STATE_UNAVAILABLE");
-      }
-      parameters.addProperty("Type", "FROM_LATEST");
-    } else if (mode != RestoreMode.FROM_NEW) {
-      String snapshot = step.getCommand().getRestoreRef();
-      if (savepointPath(api, step.getProviderJobId(), snapshot) == null) {
-        return rejected("RESTORE_SNAPSHOT_NOT_VERIFIED");
-      }
-      parameters.addProperty("SavepointId", snapshot);
+      return startMethods(api, step.getProviderJobId()).contains("FROM_LATEST")
+          ? null
+          : rejected("LATEST_STATE_UNAVAILABLE");
+    }
+    return savepointPath(api, step.getProviderJobId(), step.getCommand().getRestoreRef()) == null
+        ? rejected("RESTORE_SNAPSHOT_NOT_VERIFIED")
+        : null;
+  }
+
+  private Observation start(
+      VolcengineOpenApi api, Context context, OperationStep step, BooleanSupplier permit)
+      throws IOException {
+    Target target = context.getTarget();
+    JsonObject published = application(api, target, step.getProviderJobId());
+    Observation rejection = checkStart(api, context, step, published);
+    if (rejection != null) {
+      return rejection;
+    }
+    RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
+    JsonObject parameters = fields("Id", step.getProviderJobId());
+    if (mode == RestoreMode.FROM_NEW || mode == RestoreMode.FROM_CLOUD_LATEST) {
+      parameters.addProperty("Type", mode == RestoreMode.FROM_NEW ? "FROM_NEW" : "FROM_LATEST");
+    } else {
+      parameters.addProperty("Type", "FROM_SAVEPOINT");
+      parameters.addProperty("SavepointId", step.getCommand().getRestoreRef());
     }
     boolean submit = step.getCommand().getRequest().isSubmitInstance();
-    JsonObject body = parameters;
-    if (submit) {
-      if (AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(target.getEngineRef())
-          == null) {
-        return rejected("UNSUPPORTED_INSTANCE_ENGINE");
-      }
-      body = instanceRequest(context, step, published, parameters);
-    }
-    final JsonObject payload = body;
+    final JsonObject payload =
+        submit ? instanceRequest(context, step, published, parameters) : parameters;
     return write(
         permit,
         () -> {

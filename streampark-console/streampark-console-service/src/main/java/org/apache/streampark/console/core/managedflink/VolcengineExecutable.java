@@ -28,7 +28,9 @@ import com.google.gson.JsonParser;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +42,12 @@ import java.util.TreeMap;
 import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.text;
 
 final class VolcengineExecutable {
+  static final List<String> RESTART_SETTINGS =
+      Collections.unmodifiableList(
+          Arrays.asList(
+              "restart.attempt.enable",
+              "restart.attempt.max.count",
+              "restart.attempt.interval.min"));
   private static final String RELEASE_OPTION = "pipeline.name";
   private static final String BASE64_ARGS = "args.base64.enabled";
 
@@ -116,11 +124,11 @@ final class VolcengineExecutable {
             entry -> {
               String key = entry.getKey();
               String value = entry.getValue();
-              if (permittedResources.has(key)) {
+              if (permittedResources.has(key)
+                  || RESTART_SETTINGS.contains(key)
+                  || "execution.checkpointing.interval".equals(key)
+                  || "execution.checkpointing.timeout".equals(key)) {
                 return ManagedFlinkJobs.validRuntimeSetting(key, value);
-              }
-              if (key.startsWith("execution.checkpointing.")) {
-                return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
               }
               if ("pipeline.global-job-parameters".equals(key)) {
                 return spec.getType() == JobType.SQL && globalJobParameters(value);

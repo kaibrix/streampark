@@ -409,6 +409,10 @@ public class ManagedFlinkJobs {
           HttpStatus.CONFLICT,
           "Draft revision changed");
       spec = store.decode(text(job, "draft_spec"), Spec.class);
+      if ("volcengine".equals(provider.id()) && spec.getPriority() == null) {
+        // Freeze the product default on new releases. Older releases keep their original priority.
+        spec.setPriority(3);
+      }
     }
     validate(spec, true);
     validateProviderSpec(provider, spec);
@@ -836,6 +840,7 @@ public class ManagedFlinkJobs {
                     entry ->
                         entry.getKey() != null
                             && (allowed.contains(entry.getKey())
+                                || VolcengineExecutable.RESTART_SETTINGS.contains(entry.getKey())
                                 || ("pipeline.global-job-parameters".equals(entry.getKey())
                                     && spec.getType() == JobType.SQL)
                                 || ("args.base64.enabled".equals(entry.getKey())
@@ -864,11 +869,15 @@ public class ManagedFlinkJobs {
       case "jobmanager.memory.process.size":
       case "taskmanager.memory.process.size":
         return value.matches("(?i)[1-9][0-9]{0,8}\\s*(b|k|kb|kib|m|mb|mib|g|gb|gib|t|tb|tib)");
+      case "restart.attempt.max.count":
+      case "restart.attempt.interval.min":
+        return value.matches("[0-9]{1,10}") && Long.parseLong(value) <= Integer.MAX_VALUE;
+      case "restart.attempt.enable":
       case "args.base64.enabled":
         return "true".equals(value) || "false".equals(value);
       case "execution.checkpointing.interval":
       case "execution.checkpointing.timeout":
-        return value.matches("[1-9][0-9]{0,5} (ms|s|min)");
+        return value.matches("[1-9][0-9]{0,5} ?(ms|s|min)");
       default:
         return true;
     }

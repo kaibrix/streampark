@@ -46,6 +46,39 @@ class ManagedFlinkArtifactAndReleaseTest {
   private static final long TEAM = 100000L;
 
   @Test
+  void newVolcengineReleaseFreezesTheDefaultPriorityAndRollbackPreservesLegacyScheduling() {
+    Fixture test =
+        new Fixture(
+            new MockManagedFlinkProvider() {
+              @Override
+              public String id() {
+                return "volcengine";
+              }
+            });
+    complete(test, test.publish("default-priority", test.command()));
+    String release = activeRelease(test);
+    String sql = "select spec from t_flink_managed_release where id=?";
+    Spec spec = test.store.decode(test.sql.queryForObject(sql, String.class, release), Spec.class);
+    assertThat(spec.getPriority()).isEqualTo(3);
+
+    spec.setPriority(null);
+    test.sql.update(
+        "update t_flink_managed_release set spec=? where id=?", test.store.encode(spec), release);
+    Command rollback = test.command();
+    rollback.setExpectedReleaseId(release);
+    rollback.setSourceReleaseId(release);
+    String operation = submit(test, CommandType.ROLLBACK, rollback);
+    String rollbackRelease =
+        test.sql.queryForObject(
+            "select release_id from t_flink_managed_operation where id=?", String.class, operation);
+    assertThat(
+            test.store
+                .decode(test.sql.queryForObject(sql, String.class, rollbackRelease), Spec.class)
+                .getPriority())
+        .isNull();
+  }
+
+  @Test
   void publishStartSnapshotStopAndRestoreAreSeparate() {
     Fixture test = new Fixture(new MockManagedFlinkProvider());
     complete(test, test.publish("publish-one", test.command()));
