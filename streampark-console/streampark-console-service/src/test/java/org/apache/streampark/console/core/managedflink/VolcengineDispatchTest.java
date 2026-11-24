@@ -210,8 +210,9 @@ class VolcengineDispatchTest {
         .isEqualTo(Outcome.WAITING);
     fixture.publication.remove("AppDraftId");
     fixture.directInstance = true;
-    assertThat(fixture.provider.observe(fixture.context, direct, ack).getOutcome())
-        .isEqualTo(Outcome.CONFIRMED);
+    Observation confirmed = fixture.provider.observe(fixture.context, direct, ack);
+    assertThat(confirmed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+    assertThat(confirmed.getInstanceStartedAt()).isEqualTo(1704067200000L);
     fixture
         .publication
         .getAsJsonObject("Conf")
@@ -370,6 +371,7 @@ class VolcengineDispatchTest {
             instance.addProperty("JobId", "3");
             // Direct instances have no provider draft VersionId.
             instance.addProperty("State", "SUCCEEDED");
+            instance.addProperty("StartTime", "2024-01-01 08:00:00");
             return instance;
           }
           return object(

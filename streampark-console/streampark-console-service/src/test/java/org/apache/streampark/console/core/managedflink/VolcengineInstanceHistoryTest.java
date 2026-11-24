@@ -246,6 +246,13 @@ class VolcengineInstanceHistoryTest {
     assertThat(fixture.provider.cloudInstance(fixture.context, "31", "999"))
         .containsEntry("status", "STALE");
     assertThat(VolcengineManagedFlinkProvider.dashboardUrl("https://outside.invalid/ui/")).isNull();
+    assertThat(
+            VolcengineManagedFlinkProvider.dashboardUrl("http://demo.openstudio.ivolces.com/ui/"))
+        .isNull();
+    assertThat(
+            VolcengineManagedFlinkProvider.dashboardUrl(
+                "https://demo.openstudio.ivolces.com/ui/#private"))
+        .isNull();
   }
 
   private static final class Fixture {

@@ -359,6 +359,7 @@ public final class ManagedFlinkModels {
     private String restoreRef;
     private String artifactRef;
     private String restoredFrom;
+    private long instanceStartedAt;
 
     @JsonInclude(JsonInclude.Include.NON_DEFAULT)
     private long retryNotBefore;

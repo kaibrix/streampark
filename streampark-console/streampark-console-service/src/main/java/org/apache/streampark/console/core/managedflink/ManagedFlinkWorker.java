@@ -664,6 +664,7 @@ class ManagedFlinkWorker {
               app,
               step.getCommand().getProviderInstance());
     }
+    long started = result.getInstanceStartedAt() > 0 ? result.getInstanceStartedAt() : now;
     String run = id();
     store
         .jdbc()
@@ -679,7 +680,7 @@ class ManagedFlinkWorker {
             runState,
             runState,
             restarted ? "CLOUD_OBSERVED" : "STREAMPARK",
-            now,
+            started,
             running ? null : now,
             now);
     store
@@ -695,7 +696,7 @@ class ManagedFlinkWorker {
         .update(
             "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
             FlinkAppState.of(runState).getValue(),
-            new Date(now),
+            new Date(started),
             running ? null : new Date(now),
             app);
     return true;

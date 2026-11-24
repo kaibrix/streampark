@@ -372,6 +372,8 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     com.squareup.okhttp.HttpUrl url =
         value == null ? null : com.squareup.okhttp.HttpUrl.parse(value);
     return url != null
+            && url.isHttps()
+            && url.fragment() == null
             && url.host().endsWith(".openstudio.ivolces.com")
             && url.username().isEmpty()
             && url.password().isEmpty()
@@ -861,6 +863,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           observation.setJobId(submittedJob);
           observation.setInstanceId(acknowledgedInstance);
           observation.setRuntimeId(text(instance, "ApplicationId"));
+          if (text(instance, "StartTime") != null) {
+            observation.setInstanceStartedAt(startedAt(instance));
+          }
           observation.setVersion(expectedVersion);
           observation.setRemoteVersionId(text(instance, "VersionId"));
           observation.setRunState(runState(instance));
