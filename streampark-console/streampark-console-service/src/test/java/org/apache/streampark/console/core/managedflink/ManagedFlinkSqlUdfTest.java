@@ -33,6 +33,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
 import org.apache.streampark.console.core.service.ApplicationService;
 
+import com.google.gson.JsonObject;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
@@ -112,6 +113,58 @@ class ManagedFlinkSqlUdfTest {
         .isInstanceOfSatisfying(
             ResponseStatusException.class,
             error -> assertThat(error.getStatus().value()).isEqualTo(404));
+  }
+
+  @Test
+  void additionalJarsAreStagedInOrderAndReusedWhenStartingTheRelease(@TempDir Path dir)
+      throws IOException {
+    TrackingProvider provider = new TrackingProvider(true);
+    Fixture fixture = new Fixture(provider);
+    ManagedFlinkJobs jobs = createApp(fixture, "FLINK_VERSION_1_17");
+    ManagedFlinkArtifacts artifacts =
+        new ManagedFlinkArtifacts(fixture.store, fixture.catalog, jobs, dir.toString(), 65536);
+    List<String> ids = new ArrayList<>();
+    for (Class<?> type : new Class<?>[] {ReviewUpper.class, ReviewLower.class}) {
+      ids.add(
+          artifacts.upload(
+              TEAM,
+              APP,
+              new MockMultipartFile(
+                  "file",
+                  type.getSimpleName() + ".jar",
+                  "application/java-archive",
+                  udfJar(type))));
+    }
+    JobInput draft = new JobInput();
+    draft.setExpectedDraftRevision(1L);
+    Spec spec = sqlSpec();
+    spec.setDependencyIds(ids);
+    draft.setSpec(spec);
+    fixture.tx.executeWithoutResult(t -> jobs.edit(TEAM, APP, draft));
+    fixture.complete(publish(fixture, jobs));
+    OperationStep publication = provider.steps.get(provider.steps.size() - 1);
+    List<String> refs = VolcengineExecutable.dependencies(publication);
+    assertThat(refs).hasSize(2).doesNotHaveDuplicates().doesNotContainNull();
+
+    JsonObject remote = new JsonObject();
+    remote.addProperty("JobType", VolcengineExecutable.providerType(spec));
+    remote.addProperty("EngineVersion", publication.getCommand().getEngineRef());
+    VolcengineExecutable.writeDraft(remote, publication);
+    assertThat(VolcengineExecutable.matches(remote, publication, true)).isTrue();
+    remote.remove("Dependency");
+    assertThat(VolcengineExecutable.matches(remote, publication, true)).isFalse();
+
+    Command start = new Command();
+    start.setExpectedReleaseId(
+        fixture.sql.queryForObject(
+            "select active_release_id from t_flink_managed_job where app_id=?", String.class, APP));
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    start.setRestore(restore);
+    fixture.complete(
+        fixture.tx.execute(t -> jobs.enqueue(TEAM, APP, CommandType.START, "start-deps", start)));
+    OperationStep started = provider.steps.get(provider.steps.size() - 1);
+    assertThat(VolcengineExecutable.dependencies(started)).containsExactlyElementsOf(refs);
   }
 
   private void verifyLifecycle(String engine, Path directory) throws IOException {
@@ -235,7 +288,11 @@ class ManagedFlinkSqlUdfTest {
   }
 
   private byte[] udfJar() throws IOException {
-    String name = ReviewUpper.class.getName().replace('.', '/') + ".class";
+    return udfJar(ReviewUpper.class);
+  }
+
+  private byte[] udfJar(Class<?> type) throws IOException {
+    String name = type.getName().replace('.', '/') + ".class";
     ByteArrayOutputStream bytes = new ByteArrayOutputStream();
     try (ZipOutputStream archive = new ZipOutputStream(bytes);
         InputStream code = ReviewUpper.class.getClassLoader().getResourceAsStream(name)) {
@@ -244,6 +301,12 @@ class ManagedFlinkSqlUdfTest {
       archive.closeEntry();
     }
     return bytes.toByteArray();
+  }
+
+  public static class ReviewLower {
+    public String eval(String value) {
+      return value.toLowerCase(java.util.Locale.ROOT);
+    }
   }
 
   public static class ReviewUpper {

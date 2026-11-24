@@ -21,6 +21,7 @@ import org.apache.streampark.console.core.enums.FlinkAppState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.DependencyArtifact;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
@@ -153,6 +154,10 @@ class ManagedFlinkWorker {
             text(job, "provider_draft_id"),
             text(job, "provider_job_id"),
             staged(operation));
+    if (action == Action.STAGE_DEPENDENCY) {
+      // Dependency stages are prepended in classpath order when the release is frozen.
+      step.setDependency(command.getDependencies().get(index));
+    }
     Map<String, Object> attempt = attempt(operation, index);
     if (System.currentTimeMillis() >= number(op, "deadline_at")) {
       tx.executeWithoutResult(
@@ -247,8 +252,17 @@ class ManagedFlinkWorker {
 
   private String preflight(
       ManagedFlinkProvider provider, Context context, OperationStep step, Map<String, Object> job) {
+    if (step.getAction() == Action.STAGE_DEPENDENCY) {
+      DependencyArtifact dep = step.getDependency();
+      return artifactMatches(dep.getLocalRef(), dep.getSize(), dep.getDigest())
+          ? null
+          : "ARTIFACT_UNREADABLE";
+    }
     if (step.getAction() == Action.STAGE_ARTIFACT) {
-      return artifactMatches(step.getCommand()) ? null : "ARTIFACT_UNREADABLE";
+      FrozenCommand cmd = step.getCommand();
+      return artifactMatches(cmd.getArtifactRef(), cmd.getArtifactSize(), cmd.getArtifactDigest())
+          ? null
+          : "ARTIFACT_UNREADABLE";
     }
     if (step.getProviderJobId() == null) {
       return null;
@@ -286,14 +300,19 @@ class ManagedFlinkWorker {
           ? null
           : "DRIFTED";
     }
+    if (step.getAction() == Action.START
+        && step.getCommand().getProviderInstance() != null
+        && !Objects.equals(step.getCommand().getProviderInstance(), state.getInstanceId())) {
+      return "DRIFTED";
+    }
     return stopped ? null : "DRIFTED";
   }
 
-  private boolean artifactMatches(FrozenCommand command) {
-    if (command.getArtifactRef() == null || command.getArtifactSize() == null) {
+  private boolean artifactMatches(String ref, Long size, String expectedDigest) {
+    if (ref == null || size == null) {
       return false;
     }
-    Path path = Paths.get(command.getArtifactRef());
+    Path path = Paths.get(ref);
     try (InputStream input = Files.newInputStream(path)) {
       MessageDigest digest = ManagedFlinkStore.sha256();
       byte[] buffer = new byte[8192];
@@ -301,13 +320,13 @@ class ManagedFlinkWorker {
       int count;
       while ((count = input.read(buffer)) != -1) {
         total += count;
-        if (total > command.getArtifactSize()) {
+        if (total > size) {
           return false;
         }
         digest.update(buffer, 0, count);
       }
-      return total == command.getArtifactSize()
-          && Objects.equals(command.getArtifactDigest(), ManagedFlinkStore.hex(digest.digest()));
+      return total == size
+          && Objects.equals(expectedDigest, ManagedFlinkStore.hex(digest.digest()));
     } catch (IOException e) {
       return false;
     }
@@ -492,6 +511,18 @@ class ManagedFlinkWorker {
     long now = System.currentTimeMillis();
     String release = text(op, "release_id");
     switch (step.getAction()) {
+      case STAGE_DEPENDENCY:
+        if (!hasId(result.getArtifactRef(), 768)) {
+          return false;
+        }
+        step.getDependency().setRemoteRef(result.getArtifactRef());
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_operation set command=? where id=?",
+                store.encode(step.getCommand()),
+                step.getOperationId());
+        return true;
       case STAGE_ARTIFACT:
         return hasId(result.getArtifactRef(), 768);
       case CREATE_DRAFT:

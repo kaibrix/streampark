@@ -18,6 +18,7 @@
 package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.DependencyArtifact;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
@@ -58,13 +59,24 @@ final class VolcengineArtifactStore {
   }
 
   Observation stage(Context context, OperationStep step, BooleanSupplier permit) {
+    return stage(context, step, step.getDependency(), permit);
+  }
+
+  Observation inspectDependency(
+      Context context, OperationStep step, DependencyArtifact dependency) {
+    return stage(context, step, dependency, null);
+  }
+
+  private Observation stage(
+      Context context, OperationStep step, DependencyArtifact dependency, BooleanSupplier permit) {
     FrozenCommand command = step.getCommand();
     String bucket = context.getTarget().getArtifactBucket();
-    String digest = command.getArtifactDigest();
+    String digest = dependency == null ? command.getArtifactDigest() : dependency.getDigest();
+    Long size = dependency == null ? command.getArtifactSize() : Long.valueOf(dependency.getSize());
     if (digest == null
         || !digest.matches("[a-f0-9]{64}")
-        || command.getArtifactSize() == null
-        || command.getArtifactSize() < 1
+        || size == null
+        || size < 1
         || step.getAppId() == null) {
       return Observation.outcome(Outcome.REJECTED, "ARTIFACT_NOT_VERIFIED");
     }
@@ -81,7 +93,7 @@ final class VolcengineArtifactStore {
     try (TOSV2 tos = client(context)) {
       try (GetObjectV2Output read =
           tos.getObject(new GetObjectV2Input().setBucket(bucket).setKey(key))) {
-        if (!matches(read, command.getArtifactSize(), digest)) {
+        if (!matches(read, size, digest)) {
           return Observation.outcome(Outcome.REJECTED, "ARTIFACT_CONTENT_MISMATCH");
         }
         Observation found = Observation.outcome(Outcome.CONFIRMED, null);
@@ -106,7 +118,10 @@ final class VolcengineArtifactStore {
               .setBucket(bucket)
               .setKey(key)
               .setForbidOverwrite(true)
-              .setFile(Paths.get(command.getArtifactRef()).toFile());
+              .setFile(
+                  Paths.get(
+                          dependency == null ? command.getArtifactRef() : dependency.getLocalRef())
+                      .toFile());
       if (!permit.getAsBoolean()) {
         return Observation.outcome(Outcome.REJECTED, "DISPATCH_NOT_AUTHORIZED");
       }

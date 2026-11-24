@@ -136,6 +136,9 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
     result.setRequestId("mock-" + step.getOperationId());
     String cmd = step.getOperationId();
     switch (step.getAction()) {
+      case STAGE_DEPENDENCY:
+        result.setArtifactRef(step.getDependency().getLocalRef());
+        break;
       case STAGE_ARTIFACT:
         result.setArtifactRef(step.getCommand().getArtifactRef());
         break;
@@ -180,7 +183,10 @@ class MockManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   private String key(OperationStep step) {
-    return step.getOperationId() + ":" + step.getAction();
+    return step.getOperationId()
+        + ":"
+        + step.getAction()
+        + (step.getDependency() == null ? "" : ":" + step.getDependency().getId());
   }
 
   @Component

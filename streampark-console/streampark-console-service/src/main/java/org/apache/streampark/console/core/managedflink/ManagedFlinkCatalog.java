@@ -185,7 +185,7 @@ public class ManagedFlinkCatalog {
     check(refreshed == 1, HttpStatus.CONFLICT, "Environment or credentials changed during probe");
     Map<String, String> scopedReport = baseCapabilities(environment, connection);
     scopedReport.putAll(reads);
-    return scopedReport;
+    return applyIdentityStatus(scopedReport);
   }
 
   public Map<String, String> rotateConnection(
@@ -223,6 +223,17 @@ public class ManagedFlinkCatalog {
                 number(connection, "credential_version"));
     check(result == 1, HttpStatus.CONFLICT, "Cloud credentials changed");
     return report;
+  }
+
+  Map<String, Object> cloudJobs(long team, String id, int page, String name) {
+    authorize(team, "team:update");
+    check(
+        page > 0 && (name == null || name.length() <= 128),
+        HttpStatus.BAD_REQUEST,
+        "Invalid cloud job filter");
+    Map<String, Object> env = environment(team, id, false);
+    Map<String, Object> conn = connection(team, text(env, "connection_id"));
+    return provider(text(conn, "provider")).cloudJobs(context(conn, env, null), page, name);
   }
 
   public List<Map<String, Object>> environments(long team, int offset) {
@@ -311,6 +322,14 @@ public class ManagedFlinkCatalog {
           report.put(capability, reads.get(capability));
         }
       }
+    }
+    return applyIdentityStatus(report);
+  }
+
+  private Map<String, String> applyIdentityStatus(Map<String, String> report) {
+    if ("NEEDS_CONFIGURATION".equals(report.get("IDENTITY"))) {
+      report.replaceAll(
+          (feature, value) -> "AVAILABLE".equals(value) ? "NEEDS_CONFIGURATION" : value);
     }
     return report;
   }

@@ -128,6 +128,16 @@ class VolcengineDispatchTest {
         .isEqualTo(SAVEPOINT);
   }
 
+  @Test
+  void providerLatestRequiresCloudStartMethodAndSendsNoSavepointId() {
+    Fixture fixture = new Fixture(null);
+    fixture.step.getCommand().getRequest().getRestore().setMode(RestoreMode.FROM_CLOUD_LATEST);
+    fixture.step.getCommand().setRestoreRef(null);
+    assertThat(fixture.provider.dispatch(fixture.context, fixture.step, () -> true).getInstanceId())
+        .isEqualTo("4");
+    assertThat(fixture.actions).endsWith("GetGWSStartMethod", START).doesNotContain(LAST_READ);
+  }
+
   private static final class Fixture {
     private JsonObject submitted;
     private final Context context;
@@ -187,8 +197,14 @@ class VolcengineDispatchTest {
                   Buffer body = new Buffer();
                   chain.request().body().writeTo(body);
                   JsonObject parameters = object(body.readUtf8());
-                  assertThat(parameters.get("Type").getAsString()).isEqualTo("FROM_SAVEPOINT");
-                  assertThat(parameters.get("SavepointId").getAsString()).isEqualTo(SAVEPOINT);
+                  if (step.getCommand().getRequest().getRestore().getMode()
+                      == RestoreMode.FROM_CLOUD_LATEST) {
+                    assertThat(parameters.get("Type").getAsString()).isEqualTo("FROM_LATEST");
+                    assertThat(parameters.has("SavepointId")).isFalse();
+                  } else {
+                    assertThat(parameters.get("Type").getAsString()).isEqualTo("FROM_SAVEPOINT");
+                    assertThat(parameters.get("SavepointId").getAsString()).isEqualTo(SAVEPOINT);
+                  }
                 }
                 if (action.equals(failingAction)) {
                   throw new SocketTimeoutException("fixture transport failure");
@@ -247,6 +263,8 @@ class VolcengineDispatchTest {
         case "GetGWSApplicationDraft":
           return object(
               "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\"}");
+        case "GetGWSStartMethod":
+          return object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}");
         case LAST_READ:
           return object(
               "{\"SavepointInfos\":[{\"SavepointId\":\""

@@ -22,6 +22,7 @@
     Collapse,
     Form,
     Input,
+    List,
     Modal,
     Radio,
     Select,
@@ -42,6 +43,25 @@
   const router = useRouter();
   const visible = ref(false);
   const settings = ref(false);
+  const showCloudJobs = ref(false);
+  const cloudFilter = ref('');
+  const inventory = ref<{
+    status: string;
+    jobs?: { Id: string; JobName: string; JobType: string; State: string }[];
+    page: number;
+    hasNext: boolean;
+  }>();
+
+  function listCloudJobs(page = 1) {
+    showCloudJobs.value = true;
+    void run(async () => {
+      inventory.value = undefined;
+      inventory.value = await managedGet('/environments/' + job.environmentId + '/cloud-jobs', {
+        page,
+        name: cloudFilter.value.trim() || undefined,
+      });
+    });
+  }
   const available = ref(false);
   const busy = ref(false);
   const message = ref('');
@@ -131,12 +151,16 @@
     void run(async () => {
       const id = await managedPost<string>('/environments', { ...environment });
       await refresh();
-      const report = await managedPost<Record<string, string>>(`/environments/${id}/probe`, {});
-      message.value = Object.entries(report)
-        .map(([key, value]) => `${key} ${value}`)
-        .join(' · ');
       job.environmentId = id;
+      await probe(id);
     });
+  }
+
+  async function probe(id: string) {
+    const report = await managedPost<Record<string, string>>(`/environments/${id}/probe`, {});
+    message.value = Object.entries(report)
+      .map(([key, value]) => `${key} ${value}`)
+      .join(' · ');
   }
 
   function create() {
@@ -197,6 +221,24 @@
           >
             {{ t('managedFlink.save') }}
           </Button>
+          <Button
+            v-auth="'team:update'"
+            :disabled="busy || !job.environmentId"
+            @click="run(() => probe(job.environmentId))"
+          >
+            {{ t('managedFlink.probe') }}
+          </Button>
+          <Button
+            v-if="
+              environments.some(
+                (env) => env.id === job.environmentId && env.provider === 'volcengine',
+              )
+            "
+            v-auth="'team:update'"
+            :disabled="busy"
+            @click="listCloudJobs()"
+            >{{ t('managedFlink.cloudJobs') }}</Button
+          >
           <Button v-auth="'team:update'" @click="showSettings">{{
             t('managedFlink.settings')
           }}</Button>
@@ -204,6 +246,40 @@
         </Space>
       </Form>
     </Card>
+    <Modal v-model:visible="showCloudJobs" :title="t('managedFlink.cloudJobs')" :footer="null">
+      <Input.Search
+        v-model:value="cloudFilter"
+        :placeholder="t('managedFlink.name')"
+        :loading="busy"
+        @search="listCloudJobs()"
+      />
+      <Alert
+        v-if="inventory && inventory.status !== 'AVAILABLE'"
+        :message="inventory.status"
+        type="warning"
+      />
+      <template v-if="inventory?.status === 'AVAILABLE'">
+        <List :data-source="inventory.jobs">
+          <template #renderItem="{ item }"
+            ><List.Item
+              >{{ item.JobName }} · {{ item.Id }} · {{ item.JobType }} · {{ item.State }}</List.Item
+            ></template
+          >
+        </List>
+        <Space>
+          <Button
+            :disabled="busy || inventory.page <= 1"
+            @click="listCloudJobs((inventory?.page || 1) - 1)"
+            >{{ t('managedFlink.prevPage') }}</Button
+          >
+          <Button
+            :disabled="busy || !inventory.hasNext"
+            @click="listCloudJobs((inventory?.page || 1) + 1)"
+            >{{ t('managedFlink.nextPage') }}</Button
+          >
+        </Space>
+      </template>
+    </Modal>
     <Modal
       v-model:visible="settings"
       :title="t('managedFlink.settings')"

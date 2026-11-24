@@ -79,9 +79,26 @@
     hasNext?: boolean;
   }>();
 
+  const cloudInstance = ref<{
+    status: string;
+    id?: string;
+    state?: string;
+    engine?: string;
+    runtimeId?: string;
+    dashboard?: string;
+  }>();
+
+  function readCloudInstance(id: string) {
+    void action(async () => {
+      cloudInstance.value = undefined;
+      cloudInstance.value = await managedGet(base + '/cloud/instances/' + encodeURIComponent(id));
+    });
+  }
+
   function readCloud(page = 1) {
     void action(async () => {
       cloud.value = undefined;
+      cloudInstance.value = undefined;
       cloud.value = await managedGet(base + '/cloud', { page });
     });
   }
@@ -112,10 +129,11 @@
   const snapshots = ref<Snapshot[]>([]);
   const operations = ref<Operation[]>([]);
   const selected = ref<Operation>();
-  const restore = ref<'FROM_NEW' | 'FROM_LATEST' | 'FROM_CLOUD_LATEST' | 'FROM_SNAPSHOT'>(
-    'FROM_NEW',
-  );
+  const restore = ref<
+    'FROM_NEW' | 'FROM_LATEST' | 'FROM_CLOUD_LATEST' | 'FROM_CLOUD_SNAPSHOT' | 'FROM_SNAPSHOT'
+  >('FROM_NEW');
   const snapshotId = ref<string>();
+  const cloudSnapshotId = ref<string>();
   const fresh = ref(false);
   const submitInstance = ref(false);
   const sourceReleaseId = ref<string>();
@@ -151,7 +169,7 @@
         )),
   );
   const publishCapability = computed(() =>
-    spec.value?.type === 'SQL' && spec.value.udfArtifactId
+    spec.value?.type === 'SQL' && (spec.value.udfArtifactId || spec.value.dependencyIds?.length)
       ? 'PUBLISH_SQL_UDF'
       : 'PUBLISH_' + spec.value?.type,
   );
@@ -257,6 +275,26 @@
     void action(async () => {
       await managedPost(base + '/validate', draftSpec());
       feedback.value = t('managedFlink.validated');
+    });
+  }
+
+  function removeJar(id: string) {
+    if (!spec.value) return;
+    if (spec.value.udfArtifactId === id) delete spec.value.udfArtifactId;
+    else spec.value.dependencyIds = spec.value.dependencyIds?.filter((value) => value !== id);
+  }
+
+  function uploadDependencies(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const files = Array.from(input.files || []);
+    void action(async () => {
+      for (const file of files) {
+        const id = await uploadManagedJar(props.appId, file);
+        if (!spec.value) return;
+        const current = spec.value.dependencyIds || [];
+        if (!current.includes(id)) spec.value.dependencyIds = [...current, id];
+      }
+      input.value = '';
     });
   }
 
@@ -409,10 +447,25 @@
               <div v-if="spec.artifactId">{{ spec.artifactId }}</div>
               <Space v-if="spec.udfArtifactId">
                 {{ spec.udfArtifactId }}
-                <Button size="small" :disabled="busy" @click="spec.udfArtifactId = undefined">
+                <Button size="small" :disabled="busy" @click="removeJar(spec?.udfArtifactId || '')">
                   {{ t('common.delText') }}
                 </Button>
               </Space>
+            </FormItem>
+            <FormItem :label="t('managedFlink.dependencies')">
+              <input
+                type="file"
+                multiple
+                accept=".jar"
+                :disabled="busy"
+                @change="uploadDependencies"
+              />
+              <div v-for="id in spec.dependencyIds" :key="id">
+                {{ id }}
+                <Button size="small" :disabled="busy" @click="removeJar(id)">
+                  {{ t('common.delText') }}
+                </Button>
+              </div>
             </FormItem>
             <FormItem :label="t('managedFlink.importBuild')" v-auth="'project:view'">
               <Space wrap>
@@ -529,12 +582,31 @@
                   disabled: !can('RESTORE_FROM_CLOUD_LATEST'),
                 },
                 {
+                  value: 'FROM_CLOUD_SNAPSHOT',
+                  label: t('managedFlink.cloudSnapshot'),
+                  disabled: !can('RESTORE_FROM_CLOUD_SNAPSHOT'),
+                },
+                {
                   value: 'FROM_SNAPSHOT',
                   label: t('managedFlink.snapshot'),
                   disabled: !can('RESTORE_FROM_SNAPSHOT'),
                 },
               ]"
             />
+            <template v-if="restore === 'FROM_CLOUD_SNAPSHOT'">
+              <Button :loading="busy" @click="readCloud()">{{
+                t('managedFlink.readCloud')
+              }}</Button>
+              <Select
+                v-model:value="cloudSnapshotId"
+                style="min-width: 240px"
+                :options="
+                  (cloud?.savepoints || [])
+                    .filter((p) => p.Status === 'AVAILABLE')
+                    .map((p) => ({ value: p.SavepointId, label: p.SavepointId }))
+                "
+              />
+            </template>
             <Checkbox v-if="can('SUBMIT_INSTANCE')" v-model:checked="submitInstance">{{
               t('managedFlink.submitInstance')
             }}</Checkbox>
@@ -554,7 +626,11 @@
                 command('start', {
                   expectedReleaseId: job?.activeReleaseId,
                   submitInstance,
-                  restore: { mode: restore, snapshotId, confirmedNew: fresh },
+                  restore: {
+                    mode: restore,
+                    snapshotId: restore === 'FROM_CLOUD_SNAPSHOT' ? cloudSnapshotId : snapshotId,
+                    confirmedNew: fresh,
+                  },
                 })
               "
             >
@@ -568,7 +644,11 @@
                   expectedRunId: run?.id,
                   expectedReleaseId: job?.activeReleaseId,
                   submitInstance,
-                  restore: { mode: restore, snapshotId, confirmedNew: fresh },
+                  restore: {
+                    mode: restore,
+                    snapshotId: restore === 'FROM_CLOUD_SNAPSHOT' ? cloudSnapshotId : snapshotId,
+                    confirmedNew: fresh,
+                  },
                 })
               "
             >
@@ -679,19 +759,33 @@
             <p>{{ cloud.jobId }} · {{ cloud.jobType }}</p>
             <p>{{ t('managedFlink.startMethods') }} · {{ cloud.startMethods?.join(', ') }}</p>
             <List :header="t('managedFlink.runs')" :data-source="cloud.instances">
-              <template #renderItem="{ item }"
-                ><ListItem
-                  >{{ item.Id }} · {{ item.State }} · {{ item.StartTime }}</ListItem
-                ></template
-              >
+              <template #renderItem="{ item }">
+                <ListItem>
+                  <Button type="link" :disabled="busy" @click="readCloudInstance(item.Id)">{{
+                    item.Id
+                  }}</Button>
+                  {{ item.State }} · {{ item.StartTime }}
+                </ListItem>
+              </template>
             </List>
+            <p v-if="cloudInstance">
+              {{ cloudInstance.id }} · {{ cloudInstance.state || cloudInstance.status }} ·
+              {{ cloudInstance.engine }} {{ cloudInstance.runtimeId }}
+              <a
+                v-if="cloudInstance.dashboard"
+                :href="cloudInstance.dashboard"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Flink UI</a
+              >
+            </p>
             <Space>
               <Button
                 :disabled="!cloud.page || cloud.page === 1"
-                @click="readCloud((cloud.page || 1) - 1)"
+                @click="readCloud((cloud?.page || 1) - 1)"
                 >{{ t('managedFlink.prevPage') }}</Button
               >
-              <Button :disabled="!cloud.hasNext" @click="readCloud((cloud.page || 1) + 1)">{{
+              <Button :disabled="!cloud.hasNext" @click="readCloud((cloud?.page || 1) + 1)">{{
                 t('managedFlink.nextPage')
               }}</Button>
             </Space>
@@ -812,7 +906,7 @@
                   <pre class="whitespace-pre-wrap break-words">{{ entry.message }}</pre>
                 </li>
               </ul>
-              <Button v-if="logs.nextCursor" :loading="busy" @click="readLogs(logs.nextCursor)">
+              <Button v-if="logs.nextCursor" :loading="busy" @click="readLogs(logs?.nextCursor)">
                 {{ t('managedFlink.nextLogPage') }}
               </Button>
             </div>

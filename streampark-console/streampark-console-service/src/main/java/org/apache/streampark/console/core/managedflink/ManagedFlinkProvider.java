@@ -87,6 +87,14 @@ public interface ManagedFlinkProvider {
     return diagnostics(context, jobId, instanceId, source);
   }
 
+  default Map<String, Object> cloudInstance(Context context, String jobId, String instanceId) {
+    return Collections.singletonMap("status", "UNVERIFIED");
+  }
+
+  default Map<String, Object> cloudJobs(Context context, int page, String name) {
+    return Collections.singletonMap("status", "UNVERIFIED");
+  }
+
   default Map<String, Object> cloudJob(Context context, String jobId, int page) {
     return Collections.singletonMap("status", "UNVERIFIED");
   }

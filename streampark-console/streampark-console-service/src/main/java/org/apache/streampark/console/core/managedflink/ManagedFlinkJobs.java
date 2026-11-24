@@ -27,6 +27,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudS
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Command;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.DependencyArtifact;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
@@ -95,7 +96,7 @@ public class ManagedFlinkJobs {
         HttpStatus.BAD_REQUEST,
         "Job name must contain only letters, digits, dots, underscores, or hyphens");
     check(
-        specArtifactId(input.getSpec()) == null,
+        specArtifactId(input.getSpec()) == null && input.getSpec().getDependencyIds().isEmpty(),
         HttpStatus.BAD_REQUEST,
         "Create the job before attaching an artifact");
     if ("volcengine".equals(text(conn, "provider"))) {
@@ -156,6 +157,7 @@ public class ManagedFlinkJobs {
         old.getType() == spec.getType() && old.isBatchMode() == spec.isBatchMode(),
         HttpStatus.CONFLICT,
         "Job type is fixed");
+    spec.getDependencyIds().forEach(id -> artifact(app, id));
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
       artifact(app, artifactId);
@@ -196,10 +198,23 @@ public class ManagedFlinkJobs {
     Map<String, Object> environment = catalog.environment(team, text(job, "environment_id"), false);
     Map<String, Object> connection = catalog.connection(team, text(environment, "connection_id"));
     validateProviderSpec(catalog.provider(text(connection, "provider")), spec);
+    spec.getDependencyIds().forEach(id -> artifact(app, id));
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
       artifact(app, artifactId);
     }
+  }
+
+  Map<String, Object> cloudInstance(long team, long app, String instanceId) {
+    Map<String, Object> job = job(team, app, false);
+    Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> connection = catalog.connection(team, text(env, "connection_id"));
+    return catalog
+        .provider(text(connection, "provider"))
+        .cloudInstance(
+            catalog.context(connection, env, null),
+            text(job, "provider_job_id"),
+            required(instanceId, 191));
   }
 
   Map<String, Object> cloudJob(long team, long app, int page) {
@@ -398,7 +413,8 @@ public class ManagedFlinkJobs {
     validate(spec, true);
     validateProviderSpec(provider, spec);
     capability(capabilities, "PUBLISH_" + spec.getType().name());
-    if (spec.getUdfArtifactId() != null) {
+    if (spec.getType() == JobType.SQL
+        && (spec.getUdfArtifactId() != null || !spec.getDependencyIds().isEmpty())) {
       capability(capabilities, "PUBLISH_SQL_UDF");
     }
     String artifactId = specArtifactId(spec);
@@ -423,6 +439,17 @@ public class ManagedFlinkJobs {
     if (spec.getUdfArtifactId() != null) {
       actions.remove(Action.STAGE_ARTIFACT);
       actions.add(0, Action.STAGE_ARTIFACT);
+    }
+    int index = 0;
+    for (String dependencyId : spec.getDependencyIds()) {
+      Map<String, Object> row = artifact(app, dependencyId);
+      DependencyArtifact dep = new DependencyArtifact();
+      dep.setId(dependencyId);
+      dep.setDigest(text(row, "digest"));
+      dep.setSize(number(row, "size_bytes"));
+      dep.setLocalRef(text(row, "object_ref"));
+      frozen.getDependencies().add(dep);
+      actions.add(index++, Action.STAGE_DEPENDENCY);
     }
     frozen.setActions(actions);
     String release = id();
@@ -487,6 +514,10 @@ public class ManagedFlinkJobs {
           "Confirm a fresh start for a previously started job");
     } else if (restore.getMode() == RestoreMode.FROM_CLOUD_LATEST) {
       capability(capabilities, "RESTORE_FROM_CLOUD_LATEST");
+    } else if (restore.getMode() == RestoreMode.FROM_CLOUD_SNAPSHOT) {
+      capability(capabilities, "RESTORE_FROM_CLOUD_SNAPSHOT");
+      // The provider verifies membership and availability against this exact job before dispatch.
+      frozen.setRestoreRef(required(restore.getSnapshotId(), 191));
     } else if (restore.getMode() == RestoreMode.FROM_SNAPSHOT) {
       capability(capabilities, "RESTORE_FROM_SNAPSHOT");
       Map<String, Object> snapshot =
@@ -522,6 +553,21 @@ public class ManagedFlinkJobs {
       Map<String, Object> releasedArtifact = artifact(app, artifactId);
       frozen.setArtifactDigest(text(releasedArtifact, "digest"));
       frozen.setArtifactSize(number(releasedArtifact, "size_bytes"));
+    }
+    if (!frozen.getSpec().getDependencyIds().isEmpty()) {
+      Map<String, Object> publication =
+          store.require(
+              "select command from t_flink_managed_operation where app_id=? and release_id=? "
+                  + "and command_type in ('PUBLISH','ROLLBACK') and status='SUCCEEDED'",
+              app,
+              release);
+      frozen.setDependencies(
+          store.decode(text(publication, "command"), FrozenCommand.class).getDependencies());
+      check(
+          frozen.getDependencies().size() == frozen.getSpec().getDependencyIds().size()
+              && frozen.getDependencies().stream().allMatch(dep -> dep.getRemoteRef() != null),
+          HttpStatus.CONFLICT,
+          "Release dependencies are incomplete");
     }
     frozen.setSpecHash(text(version, "spec_hash"));
     frozen.setProviderVersion(text(version, "provider_version"));
@@ -747,6 +793,20 @@ public class ManagedFlinkJobs {
         required(spec.getArtifactId(), 36);
       }
     }
+    List<String> dependencies = spec.getDependencyIds();
+    check(
+        dependencies != null
+            && dependencies.size() <= 32
+            && dependencies.stream()
+                .allMatch(
+                    id ->
+                        id != null
+                            && !id.isBlank()
+                            && id.length() <= 36
+                            && !id.equals(specArtifactId(spec)))
+            && dependencies.stream().distinct().count() == dependencies.size(),
+        HttpStatus.BAD_REQUEST,
+        "Invalid or duplicate dependency JAR");
     check(
         spec.getArgs() != null
             && spec.getArgs().size() <= 128

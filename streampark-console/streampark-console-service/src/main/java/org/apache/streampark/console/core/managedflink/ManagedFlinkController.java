@@ -132,6 +132,15 @@ public class ManagedFlinkController {
     return ok(catalog.saveEnvironment(teamId, id, input));
   }
 
+  @GetMapping("/environments/{id}/cloud-jobs")
+  Body<Map<String, Object>> cloudJobs(
+      @RequestParam long teamId,
+      @PathVariable String id,
+      @RequestParam(defaultValue = "1") int page,
+      @RequestParam(required = false) String name) {
+    return ok(catalog.cloudJobs(teamId, id, page, name));
+  }
+
   @PostMapping("/environments/{id}/probe")
   Body<Map<String, String>> probe(@RequestParam long teamId, @PathVariable String id) {
     return ok(catalog.probe(teamId, id));
@@ -236,6 +245,15 @@ public class ManagedFlinkController {
             "provider_version",
             "status",
             "created_at"));
+  }
+
+  @GetMapping("/apps/{appId}/cloud/instances/{instanceId}")
+  ResponseEntity<Body<Map<String, Object>>> cloudInstance(
+      @RequestParam long teamId, @PathVariable long appId, @PathVariable String instanceId) {
+    requireRead(teamId, appId);
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noStore())
+        .body(ok(jobs.cloudInstance(teamId, appId, instanceId)));
   }
 
   @GetMapping("/apps/{appId}/cloud")

@@ -215,6 +215,30 @@ class VolcengineInstanceHistoryTest {
     return result;
   }
 
+  @Test
+  void cloudJobSearchOmitsRowsOutsideTheVerifiedDirectory() {
+    Fixture fixture = new Fixture(page -> history(1, 0, 0, 0));
+    java.util.Map<String, Object> result = fixture.provider.cloudJobs(fixture.context, 1, "audit");
+    assertThat(result).containsEntry("status", "AVAILABLE").containsEntry("hasNext", false);
+    assertThat(result.get("jobs").toString())
+        .contains("audit-scoped")
+        .doesNotContain("audit-foreign");
+  }
+
+  @Test
+  void cloudViewReturnsOnlyScopedJobDataAndDashboardLinks() {
+    Fixture fixture = new Fixture(page -> history(1, 1, 101, 1));
+    java.util.Map<String, Object> view = fixture.provider.cloudJob(fixture.context, "31", 1);
+    assertThat(view).containsEntry("status", "AVAILABLE").containsEntry("hasNext", false);
+    assertThat(view.get("startMethods")).isEqualTo(java.util.Collections.singletonList("FROM_NEW"));
+    assertThat(fixture.provider.cloudInstance(fixture.context, "31", "101"))
+        .containsEntry("runtimeId", "s-101")
+        .containsEntry("dashboard", "https://demo.openstudio.ivolces.com/ui/");
+    assertThat(fixture.provider.cloudInstance(fixture.context, "31", "999"))
+        .containsEntry("status", "STALE");
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl("https://outside.invalid/ui/")).isNull();
+  }
+
   private static final class Fixture {
     private final Context context;
     private final VolcengineManagedFlinkProvider provider;
@@ -248,6 +272,16 @@ class VolcengineInstanceHistoryTest {
                   return error(response, status, retryAfter);
                 }
                 switch (action) {
+                  case "GetCallerIdentity":
+                    result = json("{\"AccountId\":\"account\"}");
+                    break;
+                  case "ListGWSApplication":
+                    result =
+                        json(
+                            "{\"Current\":1,\"Size\":10,\"Total\":2,\"Records\":["
+                                + "{\"Id\":\"31\",\"ProjectId\":\"project\",\"AppDraftId\":\"draft\",\"JobName\":\"audit-scoped\",\"DeployRequest\":{\"Queue\":\"pool\"}},"
+                                + "{\"Id\":\"32\",\"ProjectId\":\"project\",\"AppDraftId\":\"other\",\"JobName\":\"audit-foreign\",\"DeployRequest\":{\"Queue\":\"pool\"}}]}");
+                    break;
                   case "GetGWSApplication":
                     result =
                         json(
@@ -258,6 +292,17 @@ class VolcengineInstanceHistoryTest {
                     result =
                         json(
                             "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"dir\"}");
+                    break;
+                  case "GetGWSStartMethod":
+                    result = json("{\"EnableStartMethods\":[\"FROM_NEW\"]}");
+                    break;
+                  case "ListGWSSavepoint":
+                    result = json("{\"SavepointInfos\":[]}");
+                    break;
+                  case "GetApplicationInstance":
+                    result =
+                        json(
+                            "{\"Id\":\"101\",\"ProjectId\":\"project\",\"JobId\":\"31\",\"ApplicationId\":\"s-101\",\"CompleteRestUrl\":\"https://demo.openstudio.ivolces.com/ui/\"}");
                     break;
                   case "ListApplicationInstance":
                     Buffer body = new Buffer();

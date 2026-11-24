@@ -27,6 +27,7 @@ export interface Spec {
   sql?: string;
   artifactId?: string;
   udfArtifactId?: string;
+  dependencyIds?: string[];
   mainClass?: string;
   args: string[];
   configuration: Record<string, string>;

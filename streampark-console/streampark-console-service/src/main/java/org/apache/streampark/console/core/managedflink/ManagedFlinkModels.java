@@ -50,6 +50,7 @@ public final class ManagedFlinkModels {
 
   public enum Action {
     STAGE_ARTIFACT,
+    STAGE_DEPENDENCY,
     CREATE_DRAFT,
     LOCK_DRAFT,
     UPDATE_DRAFT,
@@ -63,6 +64,7 @@ public final class ManagedFlinkModels {
     FROM_NEW,
     FROM_LATEST,
     FROM_CLOUD_LATEST,
+    FROM_CLOUD_SNAPSHOT,
     FROM_SNAPSHOT
   }
 
@@ -164,6 +166,9 @@ public final class ManagedFlinkModels {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     private String udfArtifactId;
 
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private List<String> dependencyIds = new ArrayList<>();
+
     private String mainClass;
     private List<String> args = new ArrayList<>();
     private Map<String, String> configuration = new LinkedHashMap<>();
@@ -193,6 +198,15 @@ public final class ManagedFlinkModels {
   }
 
   @Data
+  public static class DependencyArtifact {
+    private String id;
+    private String localRef;
+    private String digest;
+    private long size;
+    private String remoteRef;
+  }
+
+  @Data
   public static class FrozenCommand {
     private Command request;
     private List<Action> actions;
@@ -207,6 +221,10 @@ public final class ManagedFlinkModels {
     private String artifactRef;
     private String artifactDigest;
     private Long artifactSize;
+
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private List<DependencyArtifact> dependencies = new ArrayList<>();
+
     private String releaseMarker;
   }
 
@@ -258,6 +276,8 @@ public final class ManagedFlinkModels {
     private final String draftId;
     private final String providerJobId;
     private final String stagedArtifact;
+    // Set only for the individual dependency currently being staged.
+    private DependencyArtifact dependency;
   }
 
   public enum ReadStatus {

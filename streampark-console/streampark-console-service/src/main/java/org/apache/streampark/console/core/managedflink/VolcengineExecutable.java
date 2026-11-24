@@ -27,8 +27,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -162,13 +162,20 @@ final class VolcengineExecutable {
                 value -> !value.isEmpty() && value.codePoints().noneMatch(Character::isWhitespace));
   }
 
+  static List<String> dependencies(OperationStep step) {
+    List<String> refs = new ArrayList<>();
+    if (step.getCommand().getSpec().getUdfArtifactId() != null) {
+      refs.add(artifact(step));
+    }
+    step.getCommand().getDependencies().forEach(dep -> refs.add(dep.getRemoteRef()));
+    return refs;
+  }
+
   static void writeDraft(JsonObject draft, OperationStep step) {
     Spec spec = step.getCommand().getSpec();
     String artifact = artifact(step);
     JsonArray jars = new JsonArray();
-    if (spec.getUdfArtifactId() != null) {
-      jars.add(artifact);
-    }
+    dependencies(step).forEach(jars::add);
     JsonObject dependency = new JsonObject();
     dependency.add("jars", jars);
     dependency.add("dependencyVersions", new JsonObject());
@@ -209,19 +216,17 @@ final class VolcengineExecutable {
       return false;
     }
     String artifact = artifact(step);
+    List<String> jars = dependencies(step);
+    if (jars.contains(null) || !matchesDependency(remote.get("Dependency"), jars)) {
+      return false;
+    }
     if (spec.getType() == JobType.JAR) {
       return artifact != null
           && artifact.equals(text(remote, "Jar"))
           && Objects.equals(spec.getMainClass(), text(remote, "MainClass"))
-          && jarArgs(spec).equals(Objects.toString(text(remote, "Args"), ""))
-          && matchesDependency(remote.get("Dependency"), Collections.emptyList());
+          && jarArgs(spec).equals(Objects.toString(text(remote, "Args"), ""));
     }
-    return Objects.equals(spec.getSql(), text(remote, "SqlText"))
-        && (spec.getUdfArtifactId() == null
-            ? matchesDependency(remote.get("Dependency"), Collections.emptyList())
-            : artifact != null
-                && matchesDependency(
-                    remote.get("Dependency"), Collections.singletonList(artifact)));
+    return Objects.equals(spec.getSql(), text(remote, "SqlText"));
   }
 
   private static boolean matchesDependency(JsonElement remote, List<String> jars) {
