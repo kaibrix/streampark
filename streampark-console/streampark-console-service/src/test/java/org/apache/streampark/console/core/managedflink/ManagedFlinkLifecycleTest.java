@@ -716,12 +716,21 @@ class ManagedFlinkLifecycleTest {
             "select provider_version from t_flink_managed_release", String.class);
     test.reconciler.apply(
         test.jobs.job(100000L, 900401L, false),
-        new CloudState(ReadStatus.FOUND, job, version, "instance", null, "STARTING", 1000),
+        new CloudState(
+            ReadStatus.FOUND, job, version, "instance", null, "STARTING", Long.MAX_VALUE),
         2000);
     test.reconciler.apply(
         test.jobs.job(100000L, 900401L, false),
-        new CloudState(ReadStatus.FOUND, job, version, "instance", "runtime", "RUNNING", 1000),
+        new CloudState(
+            ReadStatus.FOUND, job, version, "instance", "runtime", "RUNNING", Long.MAX_VALUE),
         3000);
+    assertThat(test.sql.queryForObject("select started_at from t_flink_managed_run", Long.class))
+        .isEqualTo(2000L);
+    assertThat(
+            test.sql
+                .queryForObject("select start_time from t_flink_app", java.sql.Timestamp.class)
+                .getTime())
+        .isEqualTo(2000L);
 
     test.reconciler.apply(
         test.jobs.job(100000L, 900401L, false),

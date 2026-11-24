@@ -51,6 +51,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -87,7 +88,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   private static final int MAX_INSTANCE_PAGES = 20;
   private static final long INSTANCE_SCAN_BUDGET = TimeUnit.SECONDS.toNanos(15);
   private static final DateTimeFormatter CLOUD_TIME =
-      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+      DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withResolverStyle(ResolverStyle.STRICT);
   private static final List<String> FEATURES =
       Arrays.asList(
           "IDENTITY",
@@ -866,7 +867,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           if (text(instance, "StartTime") != null) {
             try {
               observation.setInstanceStartedAt(startedAt(instance));
-            } catch (DateTimeParseException ignored) {
+            } catch (DateTimeParseException | ArithmeticException ignored) {
               // An optional display timestamp does not affect the instance identity or state.
             }
           }

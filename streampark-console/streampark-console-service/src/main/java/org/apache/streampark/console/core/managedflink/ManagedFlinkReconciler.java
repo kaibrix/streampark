@@ -265,11 +265,12 @@ class ManagedFlinkReconciler {
     Long endedAt = ended ? now : null;
     Map<String, Object> row =
         store.find(
-            "select id,ended_at,runtime_application_id from t_flink_managed_run "
+            "select id,started_at,ended_at,runtime_application_id from t_flink_managed_run "
                 + "where app_id=? and provider_instance_id=?",
             app,
             instance);
-    long started = state.getStartedAt() > 0 ? state.getStartedAt() : now;
+    long cloudStart = state.getStartedAt();
+    long started = cloudStart > 0 && cloudStart <= now ? cloudStart : now;
     String run = row == null ? id() : text(row, "id");
     String runtimeId = state.getRuntimeId();
     if (runtimeId != null && runtimeId.isBlank()) {
@@ -304,6 +305,7 @@ class ManagedFlinkReconciler {
               endedAt,
               now);
     } else if (row.get("ended_at") == null) {
+      started = number(row, "started_at");
       store
           .jdbc()
           .update(

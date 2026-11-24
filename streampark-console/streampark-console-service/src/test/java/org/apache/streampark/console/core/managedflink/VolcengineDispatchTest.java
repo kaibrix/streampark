@@ -213,10 +213,13 @@ class VolcengineDispatchTest {
     Observation confirmed = fixture.provider.observe(fixture.context, direct, ack);
     assertThat(confirmed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
     assertThat(confirmed.getInstanceStartedAt()).isEqualTo(1704067200000L);
-    fixture.startTime = "invalid";
-    Observation withoutStart = fixture.provider.observe(fixture.context, direct, ack);
-    assertThat(withoutStart.getOutcome()).isEqualTo(Outcome.CONFIRMED);
-    assertThat(withoutStart.getInstanceStartedAt()).isZero();
+    for (String invalid :
+        java.util.Arrays.asList("invalid", "2024-02-30 08:00:00", "+300000000-01-01 00:00:00")) {
+      fixture.startTime = invalid;
+      Observation withoutStart = fixture.provider.observe(fixture.context, direct, ack);
+      assertThat(withoutStart.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+      assertThat(withoutStart.getInstanceStartedAt()).isZero();
+    }
     fixture
         .publication
         .getAsJsonObject("Conf")
