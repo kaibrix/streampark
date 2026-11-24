@@ -74,9 +74,14 @@ import static org.apache.streampark.console.core.managedflink.VolcengineOpenApi.
 @Component
 class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
+  private static final String FLINK_2_2 = "FLINK_VERSION_2_2";
   private static final List<String> ENGINES =
       Arrays.asList(
-          "FLINK_VERSION_1_11", "FLINK_VERSION_1_16", "FLINK_VERSION_1_17", "FLINK_VERSION_1_20");
+          "FLINK_VERSION_1_11",
+          "FLINK_VERSION_1_16",
+          "FLINK_VERSION_1_17",
+          "FLINK_VERSION_1_20",
+          FLINK_2_2);
   private static final List<String> TERMINAL = Arrays.asList("STOPPED", "FINISHED", "FAILED");
   private static final int INSTANCE_PAGE_SIZE = 50;
   private static final int MAX_INSTANCE_PAGES = 20;
@@ -128,7 +133,10 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   @Override
-  public String specIssue(ManagedFlinkModels.Spec spec) {
+  public String specIssue(ManagedFlinkModels.Spec spec, String engine) {
+    if (FLINK_2_2.equals(engine) && (spec.getType() != JobType.SQL || spec.isBatchMode())) {
+      return "This Volcengine engine supports streaming SQL jobs";
+    }
     if (!VolcengineExecutable.supportedConfiguration(spec)) {
       return "Flink configuration exceeds the configured Volcengine runtime settings";
     }
@@ -166,7 +174,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       report.put("STOP", "AVAILABLE");
       if (binding.permitsArtifacts(context)) {
         report.put("PUBLISH_SQL_UDF", "AVAILABLE");
-        report.put("PUBLISH_JAR", "AVAILABLE");
+        report.put(
+            "PUBLISH_JAR",
+            FLINK_2_2.equals(context.getTarget().getEngineRef()) ? "UNSUPPORTED" : "AVAILABLE");
         report.put("ARTIFACT_UPLOAD", "AVAILABLE");
         report.put("ARTIFACT_RUNTIME_READ", "AVAILABLE");
       }
@@ -1393,7 +1403,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   private boolean supportedSpec(Context context, OperationStep step) {
     ManagedFlinkModels.Spec spec = step.getCommand().getSpec();
     if (step.getCommand().getReleaseMarker() == null
-        || !VolcengineExecutable.supportedConfiguration(spec)) {
+        || specIssue(spec, context.getTarget().getEngineRef()) != null) {
       return false;
     }
     if (spec.getType() == JobType.SQL

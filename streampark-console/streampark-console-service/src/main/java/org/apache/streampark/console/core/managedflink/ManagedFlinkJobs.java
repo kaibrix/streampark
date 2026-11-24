@@ -200,7 +200,8 @@ public class ManagedFlinkJobs {
     validate(spec, true);
     Map<String, Object> environment = catalog.environment(team, text(job, "environment_id"), false);
     Map<String, Object> connection = catalog.connection(team, text(environment, "connection_id"));
-    validateProviderSpec(catalog.provider(text(connection, "provider")), spec);
+    validateProviderSpec(
+        catalog.provider(text(connection, "provider")), spec, text(job, "engine_ref"));
     spec.getDependencyIds().forEach(id -> artifact(app, id));
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
@@ -464,7 +465,7 @@ public class ManagedFlinkJobs {
       }
     }
     validate(spec, true);
-    validateProviderSpec(provider, spec);
+    validateProviderSpec(provider, spec, frozen.getEngineRef());
     capability(capabilities, "PUBLISH_" + spec.getType().name());
     if (spec.getType() == JobType.SQL
         && (spec.getUdfArtifactId() != null || !spec.getDependencyIds().isEmpty())) {
@@ -937,8 +938,8 @@ public class ManagedFlinkJobs {
     }
   }
 
-  private void validateProviderSpec(ManagedFlinkProvider provider, Spec spec) {
-    String issue = provider.specIssue(spec);
+  private void validateProviderSpec(ManagedFlinkProvider provider, Spec spec, String engine) {
+    String issue = provider.specIssue(spec, engine);
     check(issue == null, HttpStatus.UNPROCESSABLE_ENTITY, issue);
   }
 }

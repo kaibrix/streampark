@@ -56,7 +56,7 @@ public interface ManagedFlinkProvider {
     return "UNAVAILABLE";
   }
 
-  default String specIssue(Spec spec) {
+  default String specIssue(Spec spec, String engine) {
     return null;
   }
 
