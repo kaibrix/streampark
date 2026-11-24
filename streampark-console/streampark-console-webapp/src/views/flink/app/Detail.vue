@@ -143,7 +143,7 @@
       Object.assign(app, res);
       return;
     }
-    if (!externalLinks.value.length && !Object.keys(app).length) void getExternalLinks();
+    if (!externalLinks.value.length && !Object.keys(app).length) void getExternalLinks(id);
     // Get data for the first time
     if (Object.keys(app).length == 0) {
       if (
@@ -153,17 +153,20 @@
           ExecModeEnum.YARN_APPLICATION,
         ].includes(res.executionMode)
       ) {
-        await handleYarn();
+        const yarnInfo = await fetchYarn();
+        if (String(route.query.appId) !== id) return;
+        yarn.value = yarnInfo;
       }
-      await handleDetailTabs();
+      await handleDetailTabs(id);
+      if (String(route.query.appId) !== id) return;
     }
     Object.assign(app, res);
     appNotRunning.value = !app.appControl.allowView;
   }
 
-  async function handleDetailTabs() {
+  async function handleDetailTabs(id: string) {
     const commonParams = {
-      appId: route.query.appId as string,
+      appId: id,
       pageNum: 1,
       pageSize: 10,
     };
@@ -172,19 +175,15 @@
     const pointHistory = await fetchSavePointHistory(commonParams);
     const optionList = await fetchOptionLog(commonParams);
 
+    if (String(route.query.appId) !== id) return;
     if (confList.records.length > 0) detailTabs.showConf = true;
     if (pointHistory.records.length > 0) detailTabs.showSaveOption = true;
     if (optionList.records.length > 0) detailTabs.showOptionLog = true;
   }
 
-  /* Get yarn data */
-  async function handleYarn() {
-    yarn.value = await fetchYarn();
-  }
-
-  async function getExternalLinks() {
-    const { data: links } = await fetchAppExternalLink({ appId: route.query.appId as string });
-    externalLinks.value = links.data;
+  async function getExternalLinks(id: string) {
+    const { data: links } = await fetchAppExternalLink({ appId: id });
+    if (String(route.query.appId) === id) externalLinks.value = links.data;
   }
 
   watch(

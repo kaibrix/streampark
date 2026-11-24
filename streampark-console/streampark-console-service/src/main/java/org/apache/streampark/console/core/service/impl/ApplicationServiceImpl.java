@@ -541,6 +541,10 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
     records.forEach(
         record -> {
           if (record.isManagedFlinkJob()) {
+            if (record.getStartTime() != null) {
+              long end = record.getEndTime() == null ? now : record.getEndTime().getTime();
+              record.setDuration(Math.max(0, end - record.getStartTime().getTime()));
+            }
             return;
           }
           // 1) running Duration
@@ -1308,14 +1312,19 @@ public class ApplicationServiceImpl extends ServiceImpl<ApplicationMapper, Appli
   public boolean mapping(Application appParam) {
     Application application = getById(appParam.getId());
     NativeFlinkGuard.requireNative(application);
-    boolean mapping = this.baseMapper.mapping(appParam);
+    if (!this.baseMapper.mapping(appParam)) {
+      return false;
+    }
     application = getById(appParam.getId());
+    if (application == null) {
+      return false;
+    }
     if (application.isKubernetesModeJob()) {
       flinkK8sWatcher.doWatching(k8sWatcherWrapper.toTrackId(application));
     } else {
       FlinkAppHttpWatcher.doWatching(application);
     }
-    return mapping;
+    return true;
   }
 
   @Override

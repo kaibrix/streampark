@@ -93,6 +93,7 @@ final class VolcengineProfileBinding {
         && !project.isEmpty()
         && !directory.isEmpty()
         && !pool.isEmpty()
+        && !poolName.isEmpty()
         && engines.stream().anyMatch(value -> !value.isEmpty());
   }
 
@@ -103,7 +104,6 @@ final class VolcengineProfileBinding {
         && Objects.equals(project, t.getProjectId())
         && Objects.equals(directory, t.getDirectoryId())
         && Objects.equals(pool, t.getResourcePoolId())
-        && !poolName.isEmpty()
         && poolName.equals(t.getResourcePoolName())
         && engines.contains(t.getEngineRef());
   }

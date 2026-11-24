@@ -18,6 +18,7 @@ export interface RequestOptions {
   urlPrefix?: string;
   // Error message prompt type
   errorMessageMode?: ErrorMessageMode;
+  handleErrorsLocally?: boolean;
   // Whether to add a timestamp
   joinTime?: boolean;
   ignoreCancelToken?: boolean;

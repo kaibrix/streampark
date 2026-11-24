@@ -77,7 +77,7 @@ final class VolcengineMonitor {
     // Cloud Monitor uses epoch seconds. Keep its points inside the requested millisecond window.
     long from = (window.from + 999) / 1000;
     long until = (window.until - 1) / 1000;
-    if (from >= until) {
+    if (from > until) {
       return status("NO_DATA");
     }
     List<Map<String, Object>> series = new ArrayList<>();

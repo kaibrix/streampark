@@ -216,9 +216,10 @@ public class ProjectServiceImpl extends ServiceImpl<ProjectMapper, Project>
             logPath,
             project,
             buildState -> {
-              baseMapper.updateBuildState(id, buildState.get());
               if (buildState == BuildState.SUCCESSFUL) {
-                baseMapper.updateBuildTime(id);
+                baseMapper.completeBuild(id, buildState.get());
+              } else {
+                baseMapper.updateBuildState(id, buildState.get());
               }
               flinkAppHttpWatcher.initialize();
             },

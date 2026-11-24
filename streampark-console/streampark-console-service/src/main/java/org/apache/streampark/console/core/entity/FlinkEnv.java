@@ -161,7 +161,12 @@ public class FlinkEnv implements Serializable {
       throw new ApiAlertException("Unexpected Flink configuration path");
     }
     try {
-      return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+      Path resolved = path.toRealPath();
+      Path trustedDir = new File(flinkHome).toPath().toRealPath().resolve("conf");
+      if (!trustedDir.equals(resolved.getParent()) || !Files.isRegularFile(resolved)) {
+        throw new ApiAlertException("Unexpected Flink configuration path");
+      }
+      return new String(Files.readAllBytes(resolved), StandardCharsets.UTF_8);
     } catch (IOException e) {
       throw new ApiDetailException("Cannot read the Flink configuration file. ", e);
     }

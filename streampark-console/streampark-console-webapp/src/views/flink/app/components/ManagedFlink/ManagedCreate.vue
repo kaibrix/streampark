@@ -28,7 +28,7 @@
     Select,
     Space,
   } from 'ant-design-vue';
-  import { onMounted, reactive, ref } from 'vue';
+  import { onMounted, reactive, ref, watch } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { useRouter } from 'vue-router';
   import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
@@ -44,6 +44,7 @@
   const router = useRouter();
   const visible = ref(false);
   const settings = ref(false);
+  const providers = ref<string[]>([]);
   const showCloudJobs = ref(false);
   const cloudFilter = ref('');
   const inventory = ref<{
@@ -122,9 +123,17 @@
     }
   }
 
+  watch([settings, () => connection.provider], () => {
+    connection.accessKey = '';
+    connection.secretKey = '';
+  });
+
   function showSettings() {
     void run(async () => {
-      connections.value = await managedGet('/connections');
+      [connections.value, providers.value] = await Promise.all([
+        managedGet<{ id: string; name: string }[]>('/connections'),
+        managedGet<string[]>('/providers'),
+      ]);
       settings.value = true;
     });
   }
@@ -132,7 +141,7 @@
   function addConnection() {
     void run(async () => {
       const credentials =
-        connection.accessKey || connection.secretKey
+        connection.provider === 'volcengine' && (connection.accessKey || connection.secretKey)
           ? { accessKey: connection.accessKey, secretKey: connection.secretKey }
           : {};
       const id = await managedPost<string>('/connections', {
@@ -300,7 +309,7 @@
             <FormItem :label="t('managedFlink.provider')">
               <Select
                 v-model:value="connection.provider"
-                :options="['volcengine', 'mock', 'alibaba-fixture'].map((value) => ({ value }))"
+                :options="providers.map((value) => ({ value }))"
               />
             </FormItem>
             <FormItem :label="t('managedFlink.account')"

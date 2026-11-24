@@ -61,7 +61,25 @@ class ManagedFlinkReconciler {
     tx = new TransactionTemplate(manager);
   }
 
+  private final java.util.concurrent.ThreadPoolExecutor poller =
+      new java.util.concurrent.ThreadPoolExecutor(
+          0,
+          1,
+          1,
+          java.util.concurrent.TimeUnit.MINUTES,
+          new java.util.concurrent.SynchronousQueue<>(),
+          new java.util.concurrent.ThreadPoolExecutor.DiscardPolicy());
+
+  @javax.annotation.PreDestroy
+  void close() {
+    poller.shutdownNow();
+  }
+
   @Scheduled(fixedDelayString = "${streampark.managed-flink.reconcile-delay-ms:5000}")
+  void scheduleRefresh() {
+    poller.execute(this::refresh);
+  }
+
   void refresh() {
     long now = System.currentTimeMillis();
     for (Map<String, Object> job :
@@ -138,10 +156,9 @@ class ManagedFlinkReconciler {
         return;
       }
     }
-    if (hasInstance && olderInstance(job, state)) {
-      if (!TERMINAL.contains(state.getRunState())) {
-        recordReadFailure(job, ReadStatus.STALE, 0, now);
-      }
+    boolean older = hasInstance && olderInstance(job, state);
+    if (older && !TERMINAL.contains(state.getRunState())) {
+      recordReadFailure(job, ReadStatus.STALE, 0, now);
       return;
     }
     Map<String, Object> release =
@@ -162,7 +179,7 @@ class ManagedFlinkReconciler {
             now,
             now + OBSERVE_INTERVAL_MS,
             app);
-    if (hasInstance) {
+    if (hasInstance && !older) {
       if (!state.getTerminalInstances().isEmpty()) {
         for (Map<String, Object> unfinished :
             store

@@ -30,7 +30,7 @@
     Tabs,
     Tag,
   } from 'ant-design-vue';
-  import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+  import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { usePermission } from '/@/hooks/web/usePermission';
   import {
@@ -130,6 +130,7 @@
   const snapshots = ref<Snapshot[]>([]);
   const operations = ref<Operation[]>([]);
   const selected = ref<Operation>();
+  let selectionGeneration = 0;
   const restore = ref<
     'FROM_NEW' | 'FROM_LATEST' | 'FROM_CLOUD_LATEST' | 'FROM_CLOUD_SNAPSHOT' | 'FROM_SNAPSHOT'
   >('FROM_NEW');
@@ -144,6 +145,9 @@
   let timer: ReturnType<typeof setInterval> | undefined;
   let pendingRefresh: Promise<void> | undefined;
   const run = computed(() => runs.value.find((value) => value.id === job.value?.currentRunId));
+  watch([restore, () => run.value?.id, () => job.value?.activeReleaseId], () => {
+    fresh.value = false;
+  });
   const running = computed(() => run.value?.run_state === 'RUNNING');
   const cloudVerificationRequired = computed(
     () =>
@@ -203,12 +207,12 @@
     runs.value = allRuns;
     snapshots.value = points;
     operations.value = ops;
-    if (initial) {
-      const envs = await managedGet<Environment[]>('/environments');
-      environment.value = envs.find((value) => value.id === info.environmentId);
-      capabilities.value = await managedGet<Capabilities>(
-        '/environments/' + info.environmentId + '/capabilities',
-      );
+    const envPath = '/environments/' + info.environmentId;
+    [environment.value, capabilities.value] = await Promise.all([
+      managedGet<Environment>(envPath),
+      managedGet<Capabilities>(envPath + '/capabilities'),
+    ]);
+    if (initial || !spec.value) {
       spec.value = info.spec;
       argText.value = info.spec.args.join('\n');
       configurationText.value = Object.entries(info.spec.configuration)
@@ -219,7 +223,7 @@
       savedSpec.value = JSON.stringify(draftContents());
     }
     if (selected.value) {
-      selected.value = await managedGet<Operation>(base + '/operations/' + selected.value.id);
+      await readSelection(selected.value.id, selectionGeneration);
     }
   }
 
@@ -351,14 +355,21 @@
       sessionStorage.setItem(fingerprint, key);
       const accepted = await managedPost<{ operationId: string }>(base + '/' + name, data, key);
       sessionStorage.removeItem(fingerprint);
-      selected.value = await managedGet(base + '/operations/' + accepted.operationId);
+      fresh.value = false;
+      selected.value = {
+        id: accepted.operationId,
+        command_type: name.toUpperCase(),
+        status: 'QUEUED',
+      };
+      feedback.value = accepted.operationId;
+      await readSelection(accepted.operationId, ++selectionGeneration);
       await refresh();
     });
   }
 
   function publish(name: 'publish' | 'rollback' | 'submit') {
     command(name, {
-      draftRevision: job.value?.draftRevision,
+      draftRevision: editingRevision.value,
       expectedReleaseId: job.value?.activeReleaseId,
       expectedEnvVersion: environment.value?.configVersion,
       restore: name === 'submit' ? { mode: 'FROM_NEW', confirmedNew: true } : undefined,
@@ -366,10 +377,20 @@
     });
   }
 
+  async function readSelection(id: string, generation: number) {
+    const detail = await managedGet<Operation>(base + '/operations/' + id);
+    if (generation === selectionGeneration) selected.value = detail;
+  }
+
   function details(id: string) {
-    void action(async () => {
-      selected.value = await managedGet(base + '/operations/' + id);
-    });
+    const generation = ++selectionGeneration;
+    selected.value = undefined;
+    void action(() => readSelection(id, generation));
+  }
+
+  function closeDetails() {
+    selectionGeneration++;
+    selected.value = undefined;
   }
 
   function reconcile(id: string) {
@@ -453,7 +474,7 @@
       />
       <Tabs>
         <TabPane key="draft" :tab="t('managedFlink.draft')">
-          <Form layout="vertical">
+          <Form layout="vertical" :disabled="busy">
             <FormItem v-if="spec.type === 'SQL'" label="SQL">
               <Textarea v-model:value="spec.sql" :rows="10" />
               <Button size="small" :disabled="!spec.sql" @click="formatSql">
@@ -680,6 +701,17 @@
               {{ t('managedFlink.start') }}
             </Button>
             <Popconfirm
+              :key="
+                JSON.stringify([
+                  run?.id,
+                  job?.activeReleaseId,
+                  submitInstance,
+                  restore,
+                  snapshotId,
+                  cloudSnapshotId,
+                  fresh,
+                ])
+              "
               v-if="running && hasPermission('app:cancel') && hasPermission('app:start')"
               :title="t('managedFlink.restart')"
               @confirm="
@@ -700,6 +732,7 @@
               }}</Button>
             </Popconfirm>
             <Popconfirm
+              :key="'stop-' + run?.id"
               :title="t('managedFlink.stop')"
               :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'IMMEDIATE' })"
@@ -709,6 +742,7 @@
               }}</Button>
             </Popconfirm>
             <Popconfirm
+              :key="'snapshotStopConfirm-' + run?.id"
               :title="t('managedFlink.snapshotStopConfirm')"
               :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'AFTER_SNAPSHOT' })"
@@ -981,12 +1015,7 @@
           </template>
         </TabPane>
       </Tabs>
-      <Drawer
-        :visible="Boolean(selected)"
-        :title="selected?.id"
-        width="480"
-        @close="selected = undefined"
-      >
+      <Drawer :visible="Boolean(selected)" :title="selected?.id" width="480" @close="closeDetails">
         <p>{{ selected?.command_type }} · {{ selected?.status }}</p>
         <List :data-source="selected?.steps || []">
           <template #renderItem="{ item }">

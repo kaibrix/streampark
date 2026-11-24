@@ -228,6 +228,20 @@ class ManagedFlinkWorker {
               } else {
                 defer(op, ack.getRetryNotBefore());
               }
+            } else if (ack.getDraftId() != null
+                || ack.getInstanceId() != null
+                || ack.getJobId() != null) {
+              // Keep the exact attempt's receipt for the current owner to verify.
+              store
+                  .jdbc()
+                  .update(
+                      "update t_flink_managed_operation_step set result=?,request_id=coalesce(request_id,?) "
+                          + "where operation_id=? and step_index=? and action=? and state='DISPATCHING' and result is null",
+                      store.encode(ack),
+                      safe(ack.getRequestId(), 128),
+                      operation,
+                      index,
+                      action.name());
             }
           });
       return;
@@ -585,14 +599,18 @@ class ManagedFlinkWorker {
             && Objects.equals(step.getCommand().getProviderVersion(), result.getVersion())
             && start(job, step, result, release, now);
       case STOP:
-        if (!sameInstance(step, result) || !"STOPPED".equals(result.getRunState())) {
+        if (!sameInstance(step, result)
+            || !java.util.Arrays.asList("STOPPED", "FAILED", "FINISHED")
+                .contains(result.getRunState())) {
           return false;
         }
         store
             .jdbc()
             .update(
-                "update t_flink_managed_run set run_state='STOPPED',raw_state='STOPPED',"
+                "update t_flink_managed_run set run_state=?,raw_state=?,"
                     + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
+                result.getRunState(),
+                result.getRunState(),
                 now,
                 now,
                 app,
@@ -601,7 +619,10 @@ class ManagedFlinkWorker {
             .jdbc()
             .update(
                 "update t_flink_app set state=?,end_time=? where id=?",
-                FlinkAppState.CANCELED.getValue(),
+                ("STOPPED".equals(result.getRunState())
+                        ? FlinkAppState.CANCELED
+                        : FlinkAppState.of(result.getRunState()))
+                    .getValue(),
                 new Date(now),
                 app);
         return true;

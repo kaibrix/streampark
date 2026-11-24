@@ -203,6 +203,10 @@ public class ManagedFlinkCatalog {
         Objects.equals(account, input.getAccountRef()),
         HttpStatus.CONFLICT,
         "Cloud account must match");
+    check(
+        !("volcengine".equals(provider) && connection.get("credential") == null),
+        HttpStatus.CONFLICT,
+        "Rotate server-profile credentials in the deployment profile");
     Credentials candidate = supplied(input);
     Context context = new Context(team, text(env, "region"), account, target(env), candidate);
     Map<String, String> report = provider(provider).probe(context);
@@ -234,6 +238,22 @@ public class ManagedFlinkCatalog {
     Map<String, Object> env = environment(team, id, false);
     Map<String, Object> conn = connection(team, text(env, "connection_id"));
     return provider(text(conn, "provider")).cloudJobs(context(conn, env, null), page, name);
+  }
+
+  java.util.Set<String> providerNames(long team) {
+    authorize(team, "team:update");
+    return new java.util.TreeSet<>(providers.keySet());
+  }
+
+  Map<String, Object> environmentInfo(long team, String id) {
+    authorize(team, "app:view");
+    return store.require(
+        "select e.id,e.name,e.region,e.enabled,e.target,e.connection_id as \"connectionId\","
+            + "e.config_version as \"configVersion\",c.provider from t_flink_managed_env e "
+            + "join t_flink_cloud_connection c on c.id=e.connection_id and c.team_id=e.team_id "
+            + "where e.team_id=? and e.id=?",
+        team,
+        id);
   }
 
   public List<Map<String, Object>> environments(long team, int offset) {
@@ -390,24 +410,25 @@ public class ManagedFlinkCatalog {
 
   Context jobContext(
       Map<String, Object> conn, Map<String, Object> env, Target frozen, Map<String, Object> job) {
-    Context context = context(conn, env, frozen);
     String releaseId = text(job, "active_release_id");
-    if (releaseId != null
-        && text(job, "provider_draft_id") == null
-        && text(job, "provider_job_id") != null
-        && scope(conn, env).equals(text(job, "scope_key"))) {
+    if (releaseId != null && scope(conn, env).equals(text(job, "scope_key"))) {
       Map<String, Object> released =
           store.find(
               "select target from t_flink_managed_release where id=? and app_id=? and status='PUBLISHED'",
               releaseId,
               job.get("app_id"));
-      if (released != null
-          && context.getTarget().equals(store.decode(text(released, "target"), Target.class))) {
-        context.getTarget().setDirectJobId(text(job, "provider_job_id"));
-        context.getTarget().setDirectReleaseId(releaseId);
+      if (released != null) {
+        Target target = store.decode(text(released, "target"), Target.class);
+        if (frozen == null || frozen.equals(target)) {
+          if (text(job, "provider_draft_id") == null && text(job, "provider_job_id") != null) {
+            target.setDirectJobId(text(job, "provider_job_id"));
+            target.setDirectReleaseId(releaseId);
+          }
+          return context(conn, env, target);
+        }
       }
     }
-    return context;
+    return context(conn, env, frozen);
   }
 
   String scope(Map<String, Object> conn, Map<String, Object> env) {

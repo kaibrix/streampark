@@ -37,7 +37,6 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.volcengine.ApiException;
 import com.volcengine.flink20250101.model.AppForStartApplicationInstanceInput;
 import com.volcengine.flink20250101.model.DependencyForStartApplicationInstanceInput;
 import com.volcengine.flink20250101.model.DeployRequestForStartApplicationInstanceInput;
@@ -87,7 +86,6 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           FLINK_2_2);
   private static final List<String> TERMINAL = Arrays.asList("STOPPED", "FINISHED", "FAILED");
   private static final int INSTANCE_PAGE_SIZE = 50;
-  private static final int MAX_INSTANCE_PAGES = 20;
   private static final long INSTANCE_SCAN_BUDGET = TimeUnit.SECONDS.toNanos(15);
   private static final DateTimeFormatter CLOUD_TIME =
       DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss").withResolverStyle(ResolverStyle.STRICT);
@@ -122,7 +120,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   VolcengineManagedFlinkProvider(VolcengineProfileBinding binding, VolcengineTlsLogs tlsLogs) {
     this.binding = binding;
-    this.artifacts = new VolcengineArtifactStore(binding);
+    this.artifacts = new VolcengineArtifactStore();
     this.tlsLogs = tlsLogs;
   }
 
@@ -273,7 +271,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   @Override
   public CloudState inspect(Context context, String jobId) {
     try {
-      VolcengineOpenApi api = client(context);
+      VolcengineOpenApi api = verifiedClient(context);
       if (api == null) {
         return readFailure(jobId, ReadStatus.AUTH_ERROR);
       }
@@ -330,7 +328,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       return ManagedFlinkProvider.super.diagnostics(context, jobId, instanceId, source);
     }
     try {
-      VolcengineOpenApi api = client(context);
+      VolcengineOpenApi api = verifiedClient(context);
       Target target = context.getTarget();
       JsonObject published = api == null ? null : application(api, target, jobId);
       JsonObject run = published == null ? null : instance(api, target, jobId, instanceId);
@@ -347,7 +345,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   @Override
   public Map<String, Object> cloudInstance(Context context, String job, String id) {
     try {
-      VolcengineOpenApi api = client(context);
+      VolcengineOpenApi api = verifiedClient(context);
       Target target = context.getTarget();
       if (api == null || application(api, target, job) == null) {
         return Collections.singletonMap("status", "STALE");
@@ -443,7 +441,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       return Collections.singletonMap("status", "NOT_PUBLISHED");
     }
     try {
-      VolcengineOpenApi api = client(context);
+      VolcengineOpenApi api = verifiedClient(context);
       Target target = context.getTarget();
       JsonObject published = api == null ? null : application(api, target, job);
       if (published == null) {
@@ -494,16 +492,22 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       return VolcengineTlsLogs.status(capability);
     }
     try {
-      Credentials credentials = binding.credentials(context);
-      VolcengineOpenApi api = new VolcengineOpenApi(context.getRegion(), credentials);
+      VolcengineOpenApi api = verifiedClient(context);
+      if (api == null) {
+        return VolcengineTlsLogs.status("AUTH_ERROR");
+      }
       Target target = context.getTarget();
       JsonObject published = application(api, target, jobId);
       JsonObject run = published == null ? null : instance(api, target, jobId, instanceId);
       return run == null
           ? VolcengineTlsLogs.status("STALE")
           : tlsLogs.read(
-              new VolcengineTlsApi(target.getTlsRegion(), credentials), context, jobId, run, query);
-    } catch (ApiException | IOException | DateTimeParseException e) {
+              new VolcengineTlsApi(target.getTlsRegion(), api.credentials()),
+              context,
+              jobId,
+              run,
+              query);
+    } catch (IOException | DateTimeParseException e) {
       return VolcengineTlsLogs.status("STALE");
     }
   }
@@ -529,7 +533,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         case STAGE_DEPENDENCY:
         case STAGE_ARTIFACT:
           return binding.permitsArtifacts(context)
-              ? artifacts.stage(context, step, permit)
+              ? artifacts.stage(context, step, api.credentials(), permit)
               : rejected("CAPABILITY_UNVERIFIED");
         case CREATE_DRAFT:
           if (!supportedSpec(context, step)) {
@@ -788,14 +792,25 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   @Override
   public Observation observe(Context context, OperationStep step, Observation previous) {
+    if (step.getAction() == ManagedFlinkModels.Action.RESTART
+        && (previous == null
+            || step.getProviderJobId() == null
+            || !step.getProviderJobId().equals(previous.getJobId()))) {
+      return awaiting();
+    }
     try {
-      VolcengineOpenApi api = client(context);
+      VolcengineOpenApi api = verifiedClient(context);
+      if (api == null) {
+        return awaiting();
+      }
       Target target = context.getTarget();
       Observation observation = Observation.outcome(Outcome.CONFIRMED, null);
       switch (step.getAction()) {
         case STAGE_DEPENDENCY:
         case STAGE_ARTIFACT:
-          return binding.permitsArtifacts(context) ? artifacts.inspect(context, step) : awaiting();
+          return binding.permitsArtifacts(context)
+              ? artifacts.stage(context, step, api.credentials(), null)
+              : awaiting();
         case CREATE_DRAFT:
           String draftId = previous == null ? null : previous.getDraftId();
           JsonObject matchedDraft = draft(api, target, draftId);
@@ -824,11 +839,6 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         case RESTART:
           String acknowledgedInstance = previous == null ? null : previous.getInstanceId();
           if (step.getAction() == ManagedFlinkModels.Action.RESTART) {
-            if (previous == null
-                || step.getProviderJobId() == null
-                || !step.getProviderJobId().equals(previous.getJobId())) {
-              return awaiting();
-            }
             acknowledgedInstance = restartedInstance(api, target, step);
           }
           if (acknowledgedInstance == null) {
@@ -903,12 +913,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         case STOP:
           String stopped = step.getCommand().getProviderInstance();
           JsonObject completed = instance(api, target, step.getProviderJobId(), stopped);
-          if (completed == null || !same(completed, "State", "STOPPED")) {
+          if (completed == null || !TERMINAL.contains(runState(completed))) {
             return awaiting();
           }
           observation.setJobId(step.getProviderJobId());
           observation.setInstanceId(stopped);
-          observation.setRunState("STOPPED");
+          observation.setRunState(runState(completed));
           return observation;
         default:
           return awaiting();
@@ -948,7 +958,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       if (!binding.permitsArtifacts(context)) {
         return rejected("CAPABILITY_UNVERIFIED");
       }
-      Observation proof = artifacts.inspectDependency(context, step, dep);
+      Observation proof = artifacts.stage(context, step, dep, api.credentials(), null);
       if (proof.getOutcome() != Outcome.CONFIRMED
           || !Objects.equals(dep.getRemoteRef(), proof.getArtifactRef())) {
         return rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
@@ -958,7 +968,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       if (!binding.permitsArtifacts(context)) {
         return rejected("CAPABILITY_UNVERIFIED");
       }
-      Observation verified = artifacts.inspect(context, step);
+      Observation verified = artifacts.stage(context, step, api.credentials(), null);
       if (verified.getOutcome() != Outcome.CONFIRMED
           || !Objects.equals(verified.getArtifactRef(), step.getCommand().getArtifactRef())) {
         Observation failure = rejected("RELEASE_ARTIFACT_NOT_VERIFIED");
@@ -1251,6 +1261,18 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     return result;
   }
 
+  private VolcengineOpenApi verifiedClient(Context context) throws IOException {
+    VolcengineOpenApi api = client(context);
+    if (api != null) {
+      Reply identity = api.identity();
+      identity.checkReadBackoff();
+      if (identity.ok() && same(identity.data(), "AccountId", context.getAccountRef())) {
+        return api;
+      }
+    }
+    return null;
+  }
+
   VolcengineOpenApi client(Context context) throws IOException {
     if (!"cn-beijing".equals(context.getRegion())
         || !ENGINES.contains(context.getTarget().getEngineRef())) {
@@ -1334,7 +1356,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     long deadline = System.nanoTime() + INSTANCE_SCAN_BUDGET;
     Reply firstReply = instances(api, target, job, 1);
     long total = safeNumber(text(firstReply.data(), "Total"));
-    if (total < 0 || total > (long) INSTANCE_PAGE_SIZE * MAX_INSTANCE_PAGES) {
+    if (total < 0) {
       return null;
     }
     List<JsonObject> first = instancePage(firstReply, target, job, 1, total);

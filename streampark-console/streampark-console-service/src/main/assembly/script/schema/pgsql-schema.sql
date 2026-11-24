@@ -33,15 +33,15 @@ drop table if exists "public"."t_flink_env";
 drop table if exists "public"."t_flink_effective";
 drop table if exists "public"."t_flink_config";
 drop table if exists "public"."t_flink_cluster";
-DROP TABLE IF EXISTS t_flink_managed_snapshot;
-DROP TABLE IF EXISTS t_flink_managed_operation_step;
-DROP TABLE IF EXISTS t_flink_managed_operation;
-DROP TABLE IF EXISTS t_flink_managed_run;
-DROP TABLE IF EXISTS t_flink_managed_release;
-DROP TABLE IF EXISTS t_flink_managed_artifact;
-DROP TABLE IF EXISTS t_flink_managed_job;
-DROP TABLE IF EXISTS t_flink_managed_env;
-DROP TABLE IF EXISTS t_flink_cloud_connection;
+DROP TABLE IF EXISTS public.t_flink_managed_snapshot;
+DROP TABLE IF EXISTS public.t_flink_managed_operation_step;
+DROP TABLE IF EXISTS public.t_flink_managed_operation;
+DROP TABLE IF EXISTS public.t_flink_managed_run;
+DROP TABLE IF EXISTS public.t_flink_managed_release;
+DROP TABLE IF EXISTS public.t_flink_managed_artifact;
+DROP TABLE IF EXISTS public.t_flink_managed_job;
+DROP TABLE IF EXISTS public.t_flink_managed_env;
+DROP TABLE IF EXISTS public.t_flink_cloud_connection;
 
 drop table if exists "public"."t_flink_app";
 drop table if exists "public"."t_app_build_pipe";
@@ -802,7 +802,7 @@ create trigger "streampark_t_menu_modify_time_tri" before update on "public"."t_
 create trigger "streampark_t_role_modify_time_tri" before update on "public"."t_role" for each row execute procedure "public"."update_modify_time"();
 create trigger "streampark_t_user_modify_time_tri" before update on "public"."t_user" for each row execute procedure "public"."update_modify_time"();
 
-CREATE TABLE IF NOT EXISTS t_flink_cloud_connection (
+CREATE TABLE IF NOT EXISTS public.t_flink_cloud_connection (
   id varchar(36) PRIMARY KEY,
   team_id bigint NOT NULL,
   name varchar(128) NOT NULL,
@@ -815,10 +815,10 @@ CREATE TABLE IF NOT EXISTS t_flink_cloud_connection (
   UNIQUE (team_id, name)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_env (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_env (
   id varchar(36) PRIMARY KEY,
   team_id bigint NOT NULL,
-  connection_id varchar(36) NOT NULL REFERENCES t_flink_cloud_connection (id),
+  connection_id varchar(36) NOT NULL REFERENCES public.t_flink_cloud_connection (id),
   name varchar(128) NOT NULL,
   region varchar(64) NOT NULL,
   target text NOT NULL,
@@ -830,10 +830,10 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_env (
   UNIQUE (team_id, name)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_job (
-  app_id bigint PRIMARY KEY REFERENCES t_flink_app (id),
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_job (
+  app_id bigint PRIMARY KEY REFERENCES public.t_flink_app (id),
   team_id bigint NOT NULL,
-  environment_id varchar(36) NOT NULL REFERENCES t_flink_managed_env (id),
+  environment_id varchar(36) NOT NULL REFERENCES public.t_flink_managed_env (id),
   engine_ref varchar(128) NOT NULL,
   draft_revision bigint NOT NULL,
   draft_spec text NOT NULL,
@@ -852,9 +852,9 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_job (
   UNIQUE (scope_key, provider_job_id)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_artifact (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_artifact (
   id varchar(36) PRIMARY KEY,
-  app_id bigint NOT NULL REFERENCES t_flink_managed_job (app_id),
+  app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),
   digest varchar(64) NOT NULL,
   size_bytes bigint NOT NULL,
   object_ref varchar(768) NOT NULL,
@@ -863,9 +863,9 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_artifact (
   UNIQUE (app_id, digest)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_release (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_release (
   id varchar(36) PRIMARY KEY,
-  app_id bigint NOT NULL REFERENCES t_flink_managed_job (app_id),
+  app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),
   release_no bigint NOT NULL,
   draft_revision bigint NOT NULL,
   config_version int NOT NULL,
@@ -879,10 +879,10 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_release (
   UNIQUE (app_id, release_no)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_run (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_run (
   id varchar(36) PRIMARY KEY,
-  app_id bigint NOT NULL REFERENCES t_flink_managed_job (app_id),
-  release_id varchar(36) REFERENCES t_flink_managed_release (id),
+  app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),
+  release_id varchar(36) REFERENCES public.t_flink_managed_release (id),
   provider_instance_id varchar(191) NOT NULL,
   runtime_application_id varchar(191),
   run_state varchar(24) NOT NULL,
@@ -894,15 +894,15 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_run (
   UNIQUE (app_id, provider_instance_id)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_operation (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_operation (
   id varchar(36) PRIMARY KEY,
-  app_id bigint NOT NULL REFERENCES t_flink_managed_job (app_id),
+  app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),
   team_id bigint NOT NULL,
   idempotency_key varchar(128) NOT NULL,
   request_hash varchar(64) NOT NULL,
   command_type varchar(24) NOT NULL,
   command text NOT NULL,
-  release_id varchar(36) REFERENCES t_flink_managed_release (id),
+  release_id varchar(36) REFERENCES public.t_flink_managed_release (id),
   status varchar(24) NOT NULL,
   step_index int NOT NULL DEFAULT 0,
   deadline_at bigint NOT NULL,
@@ -916,8 +916,8 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_operation (
   UNIQUE (team_id, app_id, idempotency_key)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_operation_step (
-  operation_id varchar(36) NOT NULL REFERENCES t_flink_managed_operation (id),
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_operation_step (
+  operation_id varchar(36) NOT NULL REFERENCES public.t_flink_managed_operation (id),
   step_index int NOT NULL,
   action varchar(32) NOT NULL,
   state varchar(24) NOT NULL,
@@ -929,12 +929,12 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_operation_step (
   PRIMARY KEY (operation_id, step_index)
 );
 
-CREATE TABLE IF NOT EXISTS t_flink_managed_snapshot (
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_snapshot (
   id varchar(36) PRIMARY KEY,
-  app_id bigint NOT NULL REFERENCES t_flink_managed_job (app_id),
-  run_id varchar(36) NOT NULL REFERENCES t_flink_managed_run (id),
-  release_id varchar(36) REFERENCES t_flink_managed_release (id),
-  operation_id varchar(36) REFERENCES t_flink_managed_operation (id),
+  app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),
+  run_id varchar(36) NOT NULL REFERENCES public.t_flink_managed_run (id),
+  release_id varchar(36) REFERENCES public.t_flink_managed_release (id),
+  operation_id varchar(36) REFERENCES public.t_flink_managed_operation (id),
   provider_record_id varchar(191) NOT NULL,
   restore_ref varchar(191),
   state varchar(24) NOT NULL,
@@ -944,7 +944,7 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_snapshot (
   UNIQUE (app_id, provider_record_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_managed_operation_due ON t_flink_managed_operation (status, next_run_at);
-CREATE INDEX IF NOT EXISTS idx_managed_job_team ON t_flink_managed_job (team_id, environment_id);
-CREATE INDEX IF NOT EXISTS idx_managed_run_history ON t_flink_managed_run (app_id, started_at);
-CREATE INDEX IF NOT EXISTS idx_managed_snapshot_history ON t_flink_managed_snapshot (app_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_managed_operation_due ON public.t_flink_managed_operation (status, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_managed_job_team ON public.t_flink_managed_job (team_id, environment_id);
+CREATE INDEX IF NOT EXISTS idx_managed_run_history ON public.t_flink_managed_run (app_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_managed_snapshot_history ON public.t_flink_managed_snapshot (app_id, created_at);

@@ -74,7 +74,13 @@ class ManagedFlinkCredentials {
   }
 
   private byte[] crypt(int mode, String binding, byte[] nonce, byte[] data) {
-    byte[] key = Base64.getDecoder().decode(root);
+    byte[] key;
+    try {
+      key = Base64.getDecoder().decode(root);
+    } catch (IllegalArgumentException invalid) {
+      throw new org.springframework.web.server.ResponseStatusException(
+          HttpStatus.UNPROCESSABLE_ENTITY, "Managed Flink credential encryption is not configured");
+    }
     ManagedFlinkStore.check(
         key.length == 32,
         HttpStatus.UNPROCESSABLE_ENTITY,

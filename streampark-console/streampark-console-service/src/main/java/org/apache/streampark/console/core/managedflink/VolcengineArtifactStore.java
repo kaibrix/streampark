@@ -26,7 +26,6 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcom
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
-import com.volcengine.ApiException;
 import com.volcengine.sign.Credentials;
 import com.volcengine.tos.TOSV2;
 import com.volcengine.tos.TOSV2ClientBuilder;
@@ -48,27 +47,17 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.sha256;
 
 final class VolcengineArtifactStore {
-  private final VolcengineProfileBinding binding;
-
-  VolcengineArtifactStore(VolcengineProfileBinding binding) {
-    this.binding = binding;
+  Observation stage(
+      Context context, OperationStep step, Credentials credentials, BooleanSupplier permit) {
+    return stage(context, step, step.getDependency(), credentials, permit);
   }
 
-  Observation inspect(Context context, OperationStep step) {
-    return stage(context, step, null);
-  }
-
-  Observation stage(Context context, OperationStep step, BooleanSupplier permit) {
-    return stage(context, step, step.getDependency(), permit);
-  }
-
-  Observation inspectDependency(
-      Context context, OperationStep step, DependencyArtifact dependency) {
-    return stage(context, step, dependency, null);
-  }
-
-  private Observation stage(
-      Context context, OperationStep step, DependencyArtifact dependency, BooleanSupplier permit) {
+  Observation stage(
+      Context context,
+      OperationStep step,
+      DependencyArtifact dependency,
+      Credentials credentials,
+      BooleanSupplier permit) {
     FrozenCommand command = step.getCommand();
     String bucket = context.getTarget().getArtifactBucket();
     String digest = dependency == null ? command.getArtifactDigest() : dependency.getDigest();
@@ -90,7 +79,7 @@ final class VolcengineArtifactStore {
             + digest
             + ".jar";
     boolean uploading = false;
-    try (TOSV2 tos = client(context)) {
+    try (TOSV2 tos = client(context, credentials)) {
       try (GetObjectV2Output read =
           tos.getObject(new GetObjectV2Input().setBucket(bucket).setKey(key))) {
         if (!matches(read, size, digest)) {
@@ -136,20 +125,19 @@ final class VolcengineArtifactStore {
               "ARTIFACT_TOS_UNAVAILABLE");
       unavailable.setRequestId(e.getRequestID());
       return unavailable;
-    } catch (ApiException | IOException | RuntimeException e) {
+    } catch (IOException | RuntimeException e) {
       return Observation.outcome(
           uploading || permit == null ? Outcome.UNKNOWN : Outcome.REJECTED,
           "ARTIFACT_TOS_UNAVAILABLE");
     }
   }
 
-  private TOSV2 client(Context context) throws ApiException {
+  private TOSV2 client(Context context, Credentials profile) {
     org.slf4j.Logger sdkLogger = LoggerFactory.getLogger("com.volcengine.tos");
     if (sdkLogger instanceof Logger) {
       // The SDK formatter includes signed request fields at DEBUG level.
       ((Logger) sdkLogger).setLevel(Level.OFF);
     }
-    Credentials profile = binding.credentials(context);
     StaticCredentials auth =
         new StaticCredentials(profile.getAccessKey(), profile.getSecretKey())
             .withSecurityToken(profile.getSessionToken());

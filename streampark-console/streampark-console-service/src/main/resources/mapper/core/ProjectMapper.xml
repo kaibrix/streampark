@@ -40,9 +40,9 @@
         where id = #{id}
     </update>
 
-    <update id="updateBuildTime">
+    <update id="completeBuild">
         update t_flink_project
-        set last_build = now()
+        set last_build = now(), build_state = #{state}
         where id = #{id}
     </update>
 

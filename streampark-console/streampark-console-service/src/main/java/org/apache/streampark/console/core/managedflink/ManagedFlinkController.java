@@ -115,6 +115,16 @@ public class ManagedFlinkController {
     return ok(catalog.rotateConnection(teamId, id, environmentId, input));
   }
 
+  @GetMapping("/providers")
+  Body<java.util.Set<String>> providers(@RequestParam long teamId) {
+    return ok(catalog.providerNames(teamId));
+  }
+
+  @GetMapping("/environments/{id}")
+  Body<Map<String, Object>> environmentInfo(@RequestParam long teamId, @PathVariable String id) {
+    return ok(catalog.environmentInfo(teamId, id));
+  }
+
   @GetMapping("/environments")
   Body<List<Map<String, Object>>> environments(
       @RequestParam long teamId, @RequestParam(defaultValue = "0") int offset) {
@@ -439,7 +449,7 @@ public class ManagedFlinkController {
             .update(
                 "update t_flink_managed_operation set status='WAITING_PROVIDER',"
                     + "deadline_at=?,next_run_at=?,updated_at=? where id=? and team_id=? and app_id=? "
-                    + "and status='VERIFY_REQUIRED' and exists (select 1 from t_flink_managed_operation_step "
+                    + "and status='VERIFY_REQUIRED' and step_index=? and exists (select 1 from t_flink_managed_operation_step "
                     + "where operation_id=? and step_index=?)",
                 now + 300_000,
                 now,
@@ -447,6 +457,7 @@ public class ManagedFlinkController {
                 id,
                 teamId,
                 appId,
+                row.get("step_index"),
                 id,
                 row.get("step_index"));
     check(count == 1, HttpStatus.CONFLICT, "No dispatched step available for reconciliation");

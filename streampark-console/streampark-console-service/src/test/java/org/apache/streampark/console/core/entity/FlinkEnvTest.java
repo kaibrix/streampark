@@ -66,6 +66,17 @@ class FlinkEnvTest {
   }
 
   @Test
+  void rejectsConfigurationSymlinkOutsideInstallation() throws Exception {
+    Path conf = Files.createDirectories(home.resolve("conf"));
+    Path outside = Files.createTempFile(home, "other", ".yaml");
+    Path link = Files.createSymbolicLink(conf.resolve("flink-conf.yaml"), outside);
+    FlinkEnv env = new FlinkEnv();
+    env.setFlinkHome(home.toString());
+    env.setFlinkConf(link.toString());
+    assertThatThrownBy(env::convertFlinkYamlAsMap).isInstanceOf(ApiAlertException.class);
+  }
+
+  @Test
   void rejectsFilePathsOutsideTheFlinkConfigurationDirectory() {
     FlinkEnv env = new FlinkEnv();
     env.setFlinkHome(home.toString());

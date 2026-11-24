@@ -96,7 +96,7 @@ export interface Snapshot {
 export type Capabilities = Record<string, string>;
 
 const base = '/flink/managed';
-const quiet = { errorMessageMode: 'none' as const, formatDate: false };
+const quiet = { handleErrorsLocally: true, errorMessageMode: 'none' as const, formatDate: false };
 
 export function managedGet<T>(
   path: string,

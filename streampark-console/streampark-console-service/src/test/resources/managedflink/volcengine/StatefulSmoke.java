@@ -33,8 +33,8 @@ public class StatefulSmoke {
   public static void main(String[] args) throws Exception {
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
     env.setParallelism(1);
-    env.enableCheckpointing(2000);
-    String label = "jar-v1 " + Arrays.toString(programArgs(args))
+    String[] decoded = programArgs(args);
+    String label = "jar-v1 argc=" + decoded.length + " " + Arrays.toString(decoded)
         + " jm=" + System.getenv("STREAM_PARK_ACCEPTANCE_JM");
     env.addSource(new Sequence()).uid("streampark-smoke-source")
         .map(value -> label + " tm=" + System.getenv("STREAM_PARK_ACCEPTANCE_TM")
@@ -47,6 +47,7 @@ public class StatefulSmoke {
     if (!Boolean.parseBoolean(System.getenv("STREAM_PARK_ACCEPTANCE_ARGS_BASE64"))) {
       return args;
     }
+    if (args.length == 0) return args;
     if (args.length != 1) {
       throw new IllegalArgumentException("Expected one encoded argument vector");
     }
@@ -83,6 +84,7 @@ public class StatefulSmoke {
         for (Long restored : checkpoint.get()) {
           offset = Math.max(offset, restored);
         }
+        System.out.println("jar-v1 restored-offset=" + offset);
       }
     }
 

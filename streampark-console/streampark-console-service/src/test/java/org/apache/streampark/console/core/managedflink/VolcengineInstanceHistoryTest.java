@@ -127,9 +127,10 @@ class VolcengineInstanceHistoryTest {
     assertThat(failed.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
     assertThat(failed.requestedPages).containsExactly(1, 2);
 
-    Fixture overBudget = new Fixture(page -> history(1, 1001, 101, 50));
-    assertThat(overBudget.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
-    assertThat(overBudget.requestedPages).containsExactly(1);
+    Fixture longHistory =
+        new Fixture(page -> history(page, 1001, 101 + (page - 1) * 50, page == 21 ? 1 : 50));
+    assertThat(longHistory.inspect().getStatus()).isEqualTo(ReadStatus.FOUND);
+    assertThat(longHistory.requestedPages).hasSize(22);
   }
 
   @Test

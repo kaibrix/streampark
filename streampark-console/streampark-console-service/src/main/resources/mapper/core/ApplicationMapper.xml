@@ -29,8 +29,10 @@
             CASE
                 WHEN  count(1) > 0 THEN true ELSE false
             END
-        from t_flink_app
-        where team_id = #{teamId}
+        from t_flink_app t
+        where t.team_id = #{teamId}
+          and not exists (select 1 from t_flink_managed_job m
+                          where m.app_id = t.id and m.archived = true)
         limit 1
     </select>
 
@@ -39,8 +41,10 @@
             CASE
                 WHEN  count(1) > 0 THEN true ELSE false
             END
-        from t_flink_app
-        where job_name = #{jobName}
+        from t_flink_app t
+        where t.job_name = #{jobName}
+          and not exists (select 1 from t_flink_managed_job m
+                          where m.app_id = t.id and m.archived = true)
         limit 1
     </select>
 

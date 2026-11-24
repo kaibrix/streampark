@@ -31,7 +31,7 @@ public interface ProjectMapper extends BaseMapper<Project> {
 
   void updateBuildState(@Param("id") Long id, @Param("state") Integer buildState);
 
-  void updateBuildTime(@Param("id") Long id);
+  void completeBuild(@Param("id") Long id, @Param("state") Integer state);
 
   IPage<Project> page(Page<Project> page, @Param("project") Project project);
 

@@ -158,6 +158,10 @@ const transform: AxiosTransform = {
    */
   responseInterceptorsCatch: (axiosInstance: AxiosResponse, error: any) => {
     const { t } = useI18n();
+    if (error?.config?.requestOptions?.handleErrorsLocally) {
+      if (error.response?.status === 401) errorHandler(error.response);
+      return Promise.reject(new Error(error.response?.data?.message || error.message));
+    }
     const errorLogStore = useErrorLogStoreWithOut();
     errorLogStore.addAjaxErrorInfo(error);
     const { response, code, message, config } = error || {};

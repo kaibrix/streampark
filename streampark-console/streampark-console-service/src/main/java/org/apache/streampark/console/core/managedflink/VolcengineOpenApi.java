@@ -68,6 +68,10 @@ final class VolcengineOpenApi {
     this.transport = transport;
   }
 
+  Credentials credentials() {
+    return credentials;
+  }
+
   private static OkHttpClient transport() {
     com.volcengine.observability.debugger.SdkDebugLog.SDK_CORE_LOGGER.setLogLevel(0L);
     OkHttpClient client = new OkHttpClient();

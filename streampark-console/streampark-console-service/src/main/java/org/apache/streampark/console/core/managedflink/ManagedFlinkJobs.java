@@ -625,7 +625,8 @@ public class ManagedFlinkJobs {
       Map<String, Object> publication =
           store.require(
               "select command from t_flink_managed_operation where app_id=? and release_id=? "
-                  + "and command_type in ('PUBLISH','ROLLBACK','SUBMIT') and status='SUCCEEDED'",
+                  + "and (command_type in ('PUBLISH','ROLLBACK') and status='SUCCEEDED'"
+                  + " or command_type='SUBMIT' and status in ('SUCCEEDED','FAILED'))",
               app,
               release);
       frozen.setDependencies(

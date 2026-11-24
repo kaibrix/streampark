@@ -34,7 +34,7 @@ For an isolated local Console, set these Spring properties:
 | --- | --- |
 | `streampark.managed-flink.enabled` | `true` to expose the managed API and scheduler |
 | `streampark.managed-flink.mock-enabled` | `true` for the local `mock` and `alibaba-fixture` providers |
-| `streampark.managed-flink.artifact-directory` | An absolute staging directory writable by the Console. Use shared storage for a multi-instance Console. |
+| `streampark.managed-flink.artifact-directory` | An absolute staging directory writable by the Console. Use a filesystem with hard-link support so concurrent uploads can publish a digest atomically. Multiple Console instances must share the directory. |
 | `streampark.managed-flink.credential-key` | A Base64-encoded 32-byte key supplied through deployment secret configuration when using cloud credentials |
 
 Open **Create managed Flink job** from the existing Flink job creation screen.

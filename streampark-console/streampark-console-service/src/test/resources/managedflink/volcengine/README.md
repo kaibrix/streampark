@@ -71,7 +71,7 @@ jar cfe /tmp/managed-flink-fixture/stateful-smoke.jar \
 | --- | --- | --- |
 | SQL | Use `plain-sql.sql` | New instance prints `sql-v1`. |
 | SQL with UDF | Use `stateful-udf.sql` and attach `label-udf.jar` as a SQL dependency | TaskManager prints `udf-jar-verified:<count>:tm=tm-smoke:run=sql-smoke:tenant=租户 beta`. |
-| JAR | Upload `stateful-smoke.jar` and set the main class from its manifest | TaskManager prints `jar-v1 [alpha beta, 中文, --limit=7] jm=jm-smoke tm=tm-smoke offset=<count>`. |
+| JAR | Upload `stateful-smoke.jar` and set the main class from its manifest | TaskManager prints `jar-v1 argc=3 [alpha beta, 中文, --limit=7] jm=jm-smoke tm=tm-smoke offset=<count>`. |
 
 Set these runtime options before publishing the SQL with UDF and JAR cases.
 
@@ -100,8 +100,8 @@ For each stateful case, publish and verify the scoped draft, job and
 executable revision before starting. In the new instance, verify the engine,
 configured checkpoint interval, and expected output. After the count
 reaches 15, create a named savepoint. Verify the savepoint is `AVAILABLE`,
-stop that instance, and start with that exact savepoint ID. Verify the resumed
-counter exceeds 15 and the same job configuration and output markers remain.
+stop that instance, and start with that exact savepoint ID. Verify the restored JAR instance prints `jar-v1 restored-offset=<saved counter>` before emitting new records.
+Verify subsequent counters exceed 15 and retain the configured output markers.
 Stop the restored test instance. A restore with an unavailable savepoint must
 leave the job stopped.
 
