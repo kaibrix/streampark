@@ -51,6 +51,7 @@ public final class ManagedFlinkModels {
   }
 
   public enum Action {
+    RESTART,
     SUBMIT,
     STAGE_ARTIFACT,
     STAGE_DEPENDENCY,
@@ -305,6 +306,29 @@ public final class ManagedFlinkModels {
     String runState;
     long startedAt;
     long retryNotBefore;
+
+    Map<String, String> terminalInstances;
+
+    public CloudState(
+        ReadStatus status,
+        String jobId,
+        String version,
+        String instanceId,
+        String runtimeId,
+        String runState,
+        long startedAt,
+        long retryNotBefore) {
+      this(
+          status,
+          jobId,
+          version,
+          instanceId,
+          runtimeId,
+          runState,
+          startedAt,
+          retryNotBefore,
+          java.util.Collections.emptyMap());
+    }
 
     public CloudState(
         ReadStatus status,

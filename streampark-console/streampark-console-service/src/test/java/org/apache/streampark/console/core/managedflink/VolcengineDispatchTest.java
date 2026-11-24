@@ -112,6 +112,20 @@ class VolcengineDispatchTest {
   }
 
   @Test
+  void nativeRestartNeverAdoptsAnInstanceFromAnotherAcknowledgedJob() {
+    Fixture fixture = new Fixture(null);
+    OperationStep step =
+        new OperationStep(
+            "operation", 2L, Action.RESTART, fixture.step.getCommand(), "draft", "3", null);
+    Observation other = Observation.outcome(Outcome.WAITING, null);
+    other.setJobId("another-job");
+    other.setInstanceId("4");
+    assertThat(fixture.provider.observe(fixture.context, step, other).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    assertThat(fixture.actions).isEmpty();
+  }
+
+  @Test
   void publicInstanceSubmissionSendsFrozenSqlAndExplicitRestoreStrategy() {
     Fixture fixture = new Fixture(null);
     fixture.step.getCommand().getRequest().setSubmitInstance(true);

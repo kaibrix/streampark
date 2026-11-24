@@ -388,6 +388,12 @@ public class ManagedFlinkJobs {
         frozen.setProviderInstance(text(current, "provider_instance_id"));
       }
       prepareStart(app, restart, env, capabilities, cmd, frozen, release, current);
+      if (restart
+          && !cmd.isSubmitInstance()
+          && text(job, "provider_draft_id") != null
+          && "AVAILABLE".equals(capabilities.get("CLOUD_RESTART"))) {
+        frozen.setActions(Collections.singletonList(Action.RESTART));
+      }
     } else {
       prepareRunAction(team, type, cmd, capabilities, frozen, current);
     }

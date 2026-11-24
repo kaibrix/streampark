@@ -294,7 +294,9 @@ class ManagedFlinkWorker {
         state.getInstanceId() == null
             || java.util.Arrays.asList("STOPPED", "FAILED", "FINISHED")
                 .contains(state.getRunState());
-    if (step.getAction() == Action.STOP || step.getAction() == Action.SNAPSHOT) {
+    if (step.getAction() == Action.STOP
+        || step.getAction() == Action.RESTART
+        || step.getAction() == Action.SNAPSHOT) {
       return !stopped
               && Objects.equals(step.getCommand().getProviderInstance(), state.getInstanceId())
           ? null
@@ -484,7 +486,9 @@ class ManagedFlinkWorker {
       defer(op, evidence.getRetryNotBefore());
       return;
     }
-    if ((step.getAction() == Action.START || step.getAction() == Action.SUBMIT)
+    if ((step.getAction() == Action.START
+            || step.getAction() == Action.RESTART
+            || step.getAction() == Action.SUBMIT)
         && "FAILED".equals(evidence.getRunState())) {
       if (evidence.getCode() == null) {
         evidence.setCode("RUNTIME_FAILED");
@@ -574,6 +578,7 @@ class ManagedFlinkWorker {
                 app);
         store.markApplicationReleased(app);
         return true;
+      case RESTART:
       case START:
         return hasId(step.getProviderJobId(), 191)
             && step.getProviderJobId().equals(result.getJobId())
@@ -644,13 +649,28 @@ class ManagedFlinkWorker {
       return false;
     }
     long app = number(job, "app_id");
+    boolean restarted = step.getAction() == Action.RESTART;
+    if (restarted) {
+      if (Objects.equals(step.getCommand().getProviderInstance(), result.getInstanceId())) {
+        return false;
+      }
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_run set run_state='STOPPED',raw_state='STOPPED',"
+                  + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
+              now,
+              now,
+              app,
+              step.getCommand().getProviderInstance());
+    }
     String run = id();
     store
         .jdbc()
         .update(
             "insert into t_flink_managed_run (id,app_id,release_id,provider_instance_id,"
                 + "runtime_application_id,run_state,raw_state,origin,started_at,ended_at,observed_at) "
-                + "values (?,?,?,?,?,?,?,'STREAMPARK',?,?,?)",
+                + "values (?,?,?,?,?,?,?,?,?,?,?)",
             run,
             app,
             release,
@@ -658,6 +678,7 @@ class ManagedFlinkWorker {
             result.getRuntimeId(),
             runState,
             runState,
+            restarted ? "CLOUD_OBSERVED" : "STREAMPARK",
             now,
             running ? null : now,
             now);

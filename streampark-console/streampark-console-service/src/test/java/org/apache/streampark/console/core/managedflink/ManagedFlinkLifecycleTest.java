@@ -644,6 +644,43 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void closesPreviousInstancesOnlyWithCloudTerminalEvidence() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String version =
+        test.sql.queryForObject(
+            "select provider_version from t_flink_managed_release", String.class);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(ReadStatus.FOUND, job, version, "old", "s-old", "RUNNING", 1000),
+        2000);
+    test.reconciler.apply(
+        test.jobs.job(100000L, 900401L, false),
+        new CloudState(
+            ReadStatus.FOUND,
+            job,
+            version,
+            "new",
+            "s-new",
+            "RUNNING",
+            3000,
+            0,
+            java.util.Collections.singletonMap("old", "STOPPED")),
+        4000);
+    assertThat(
+            test.sql.queryForObject(
+                "select run_state from t_flink_managed_run where provider_instance_id='old'",
+                String.class))
+        .isEqualTo("STOPPED");
+    assertThat(
+            test.sql.queryForObject(
+                "select run_state from t_flink_managed_run where provider_instance_id='new'",
+                String.class))
+        .isEqualTo("RUNNING");
+  }
+
+  @Test
   void recordsRuntimeIdentityWhenItFirstAppearsAfterStartup() {
     Fixture test = new Fixture(new MockManagedFlinkProvider());
     test.complete(test.publish("publish", test.command()));

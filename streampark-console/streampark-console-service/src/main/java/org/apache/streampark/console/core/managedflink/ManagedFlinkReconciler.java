@@ -161,6 +161,32 @@ class ManagedFlinkReconciler {
             now + OBSERVE_INTERVAL_MS,
             app);
     if (hasInstance) {
+      if (!state.getTerminalInstances().isEmpty()) {
+        for (Map<String, Object> unfinished :
+            store
+                .jdbc()
+                .queryForList(
+                    "select provider_instance_id from t_flink_managed_run where app_id=? "
+                        + "and ended_at is null and provider_instance_id<>?",
+                    app,
+                    state.getInstanceId())) {
+          String id = text(unfinished, "provider_instance_id");
+          String terminal = state.getTerminalInstances().get(id);
+          if (TERMINAL.contains(terminal)) {
+            store
+                .jdbc()
+                .update(
+                    "update t_flink_managed_run set run_state=?,raw_state=?,"
+                        + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=? and ended_at is null",
+                    terminal,
+                    terminal,
+                    now,
+                    now,
+                    app,
+                    id);
+          }
+        }
+      }
       projectRun(app, state, now);
     }
   }
