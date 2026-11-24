@@ -129,7 +129,13 @@ class VolcengineInstanceHistoryTest {
 
     Fixture overBudget = new Fixture(page -> history(1, 1001, 101, 50));
     assertThat(overBudget.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
-    assertThat(overBudget.requestedPages).containsExactly(1);
+    assertThat(overBudget.requestedPages).containsExactly(1, 1, 1);
+
+    Fixture large = new Fixture(page -> history(1, 1001, 101, 50, "RUNNING"));
+    large.filteredTerminalCount = 1000;
+    assertThat(large.inspect())
+        .extracting(CloudState::getStatus, CloudState::getInstanceId)
+        .containsExactly(ReadStatus.FOUND, "101");
   }
 
   @Test
@@ -262,6 +268,8 @@ class VolcengineInstanceHistoryTest {
     private final VolcengineManagedFlinkProvider provider;
     private final List<Integer> requestedPages = new ArrayList<>();
 
+    private int filteredTerminalCount = -1;
+
     Fixture(IntFunction<JsonObject> responses) {
       this(responses, null, 0, 0, null);
     }
@@ -336,7 +344,15 @@ class VolcengineInstanceHistoryTest {
                     if (action.equals(failingAction) && page == failingPage) {
                       return error(response, status, retryAfter);
                     }
-                    result = responses.apply(page);
+                    if (query.has("State") && filteredTerminalCount >= 0) {
+                      int count =
+                          "STOPPED".equals(query.get("State").getAsString())
+                              ? filteredTerminalCount
+                              : 0;
+                      result = history(1, count, 102, Math.min(count, 50));
+                    } else {
+                      result = responses.apply(page);
+                    }
                     if (result == null) {
                       throw new IOException("Fixture page read failed");
                     }

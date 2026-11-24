@@ -402,12 +402,20 @@ public class ManagedFlinkCatalog {
               releaseId,
               job.get("app_id"));
       if (released != null
-          && context.getTarget().equals(store.decode(text(released, "target"), Target.class))) {
+          && sameExecutionScope(
+              context.getTarget(), store.decode(text(released, "target"), Target.class))) {
         context.getTarget().setDirectJobId(text(job, "provider_job_id"));
         context.getTarget().setDirectReleaseId(releaseId);
       }
     }
     return context;
+  }
+
+  private boolean sameExecutionScope(Target current, Target released) {
+    return released != null
+        && Objects.equals(current.getProjectId(), released.getProjectId())
+        && Objects.equals(current.getDirectoryId(), released.getDirectoryId())
+        && Objects.equals(current.getResourcePoolId(), released.getResourcePoolId());
   }
 
   String scope(Map<String, Object> conn, Map<String, Object> env) {

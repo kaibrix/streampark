@@ -823,25 +823,19 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         case START:
         case RESTART:
           String acknowledgedInstance = previous == null ? null : previous.getInstanceId();
-          if (step.getAction() == ManagedFlinkModels.Action.RESTART) {
-            if (previous == null
-                || step.getProviderJobId() == null
-                || !step.getProviderJobId().equals(previous.getJobId())) {
-              return awaiting();
-            }
-            acknowledgedInstance = restartedInstance(api, target, step);
-          }
-          if (acknowledgedInstance == null) {
+          String submittedJob = step.getProviderJobId();
+          String reportedJob = previous == null ? null : previous.getJobId();
+          if (submittedJob != null && reportedJob != null && !submittedJob.equals(reportedJob)) {
             return awaiting();
           }
-          String submittedJob = step.getProviderJobId();
           String expectedVersion = step.getCommand().getProviderVersion();
           if (step.getAction() == ManagedFlinkModels.Action.SUBMIT) {
-            if (previous.getJobId() == null
-                || (submittedJob != null && !submittedJob.equals(previous.getJobId()))) {
+            if (submittedJob == null) {
+              submittedJob = reportedJob == null ? findDirectJob(api, target, step) : reportedJob;
+            }
+            if (submittedJob == null) {
               return awaiting();
             }
-            submittedJob = previous.getJobId();
             JsonObject direct =
                 application(api, target, submittedJob, step.getCommand().getReleaseMarker());
             if (!VolcengineExecutable.matches(direct, step, false)
@@ -850,6 +844,28 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             }
             expectedVersion = revision(direct);
             observation.setSpecHash(step.getCommand().getSpecHash());
+          }
+          if (step.getAction() == ManagedFlinkModels.Action.RESTART
+              || acknowledgedInstance == null) {
+            boolean restart = step.getAction() == ManagedFlinkModels.Action.RESTART;
+            String prior =
+                restart
+                    ? step.getCommand().getProviderInstance()
+                    : step.getCommand().getInstanceBeforeDispatch();
+            acknowledgedInstance =
+                successor(
+                    api,
+                    target,
+                    submittedJob,
+                    prior,
+                    step.getDispatchedAt(),
+                    restart,
+                    step.getAction() == ManagedFlinkModels.Action.SUBMIT
+                        ? step.getCommand().getReleaseMarker()
+                        : null);
+          }
+          if (acknowledgedInstance == null) {
+            return awaiting();
           }
           JsonObject instance = instance(api, target, submittedJob, acknowledgedInstance);
           if (instance == null
@@ -1043,30 +1059,87 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         });
   }
 
-  private String restartedInstance(VolcengineOpenApi api, Target target, OperationStep step)
+  private String findDirectJob(VolcengineOpenApi api, Target target, OperationStep step)
       throws IOException {
-    String job = step.getProviderJobId();
-    String oldId = step.getCommand().getProviderInstance();
-    JsonObject old = instance(api, target, job, oldId);
-    if (old == null || !same(old, "State", "STOPPED")) {
+    Reply reply = listJobs(api, target, step.getCommand().getJobName());
+    reply.checkReadBackoff();
+    List<JsonObject> records = rows(reply.data().get("Records"));
+    if (!reply.ok() || safeNumber(text(reply.data(), "Total")) != records.size()) {
       return null;
     }
-    JsonObject published = application(api, target, job);
-    List<JsonObject> history = instanceHistory(api, target, job);
-    if (published == null || history == null) {
+    String found = null;
+    for (JsonObject row : records) {
+      String id = text(row, "Id");
+      if (same(row, "JobName", step.getCommand().getJobName())
+          && application(api, target, id, step.getCommand().getReleaseMarker()) != null) {
+        if (found != null) {
+          return null;
+        }
+        found = id;
+      }
+    }
+    return found;
+  }
+
+  private String successor(
+      VolcengineOpenApi api,
+      Target target,
+      String job,
+      String prior,
+      long dispatchedAt,
+      boolean restart,
+      String directRelease)
+      throws IOException {
+    if (job == null || (prior == null && (restart || dispatchedAt <= 0))) {
       return null;
     }
-    // The public restart acknowledges only the job ID. Confirm its unique successor and the
-    // application's current runtime before recording the observed instance.
+    boolean hasPrior = StringUtils.isNotEmpty(prior);
+    JsonObject old = hasPrior ? instance(api, target, job, prior) : null;
+    if (hasPrior
+        && (old == null
+            || !TERMINAL.contains(runState(old))
+            || (restart && !same(old, "State", "STOPPED")))) {
+      return null;
+    }
+    JsonObject published =
+        directRelease == null
+            ? application(api, target, job)
+            : application(api, target, job, directRelease);
+    Reply reply = instances(api, target, job, 1);
+    long total = safeNumber(text(reply.data(), "Total"));
+    List<JsonObject> recent = instancePage(reply, target, job, 1, total);
+    if (published == null || recent == null || recent.isEmpty()) {
+      return null;
+    }
+    // The response is ordered by descending start time. Never infer uniqueness across a
+    // truncated page whose oldest entry could still be a successor.
+    // Steps dispatched by older Consoles only have a local dispatch timestamp. Require the
+    // candidate to start strictly later, since cloud timestamps have second precision.
+    long cutoff = prior == null ? dispatchedAt + 1 : Long.MIN_VALUE;
+    final long earliest = old == null ? cutoff : startedAt(old);
+    if (total > recent.size() && startedAt(recent.get(recent.size() - 1)) >= earliest) {
+      return null;
+    }
     List<JsonObject> successors =
-        history.stream()
-            .filter(run -> !same(run, "Id", oldId) && startedAt(run) >= startedAt(old))
+        recent.stream()
+            .filter(
+                run ->
+                    !same(run, "Id", prior)
+                        && (earliest == Long.MIN_VALUE || startedAt(run) >= earliest))
             .collect(Collectors.toList());
-    if (successors.size() != 1
-        || !same(successors.get(0), "ApplicationId", text(published, "ApplicationId"))) {
+    if (successors.size() != 1) {
       return null;
     }
-    return text(successors.get(0), "Id");
+    JsonObject next = successors.get(0);
+    // A tie with the baseline could be another instance already present before dispatch.
+    if (!restart && old != null && startedAt(next) == earliest) {
+      return null;
+    }
+    String runtime = text(published, "ApplicationId");
+    if ((restart || runtime != null) && !same(next, "ApplicationId", runtime)) {
+      return null;
+    }
+    return text(next, "Id");
   }
 
   private Observation submitInstance(VolcengineOpenApi api, JsonObject payload) throws IOException {
@@ -1334,7 +1407,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     long deadline = System.nanoTime() + INSTANCE_SCAN_BUDGET;
     Reply firstReply = instances(api, target, job, 1);
     long total = safeNumber(text(firstReply.data(), "Total"));
-    if (total < 0 || total > (long) INSTANCE_PAGE_SIZE * MAX_INSTANCE_PAGES) {
+    if (total < 0) {
       return null;
     }
     List<JsonObject> first = instancePage(firstReply, target, job, 1, total);
@@ -1343,6 +1416,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
     if (first == null || total <= INSTANCE_PAGE_SIZE) {
       return first;
+    }
+    if (total > (long) INSTANCE_PAGE_SIZE * MAX_INSTANCE_PAGES) {
+      return currentFromLongHistory(api, target, job, total, first, deadline);
     }
     List<JsonObject> history = new ArrayList<>(first);
     Set<String> ids = first.stream().map(row -> text(row, "Id")).collect(Collectors.toSet());
@@ -1367,6 +1443,56 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             && head != null
             && readbackKeys(first).equals(readbackKeys(head))
         ? history
+        : null;
+  }
+
+  // Count terminal instances server-side so older pages cannot hide an active run.
+  private List<JsonObject> currentFromLongHistory(
+      VolcengineOpenApi api,
+      Target target,
+      String job,
+      long total,
+      List<JsonObject> first,
+      long deadline)
+      throws IOException {
+    long remaining = total;
+    for (String state : Arrays.asList("STOPPED", "FAILED", "SUCCEEDED")) {
+      if (System.nanoTime() - deadline >= 0) {
+        return null;
+      }
+      Reply reply = instances(api, target, job, 1, state);
+      long count = safeNumber(text(reply.data(), "Total"));
+      List<JsonObject> page = instancePage(reply, target, job, 1, count);
+      if (count < 0
+          || count > remaining
+          || page == null
+          || page.stream().anyMatch(row -> !same(row, "State", state))) {
+        return null;
+      }
+      remaining -= count;
+    }
+    List<JsonObject> current = new ArrayList<>(first);
+    long live = first.stream().filter(row -> !TERMINAL.contains(runState(row))).count();
+    if (remaining == 1 && live == 0) {
+      // The single active run may be older than the first page of completed batch instances.
+      Reply running = instances(api, target, job, 1, "RUNNING");
+      List<JsonObject> active = instancePage(running, target, job, 1, 1);
+      if (active == null
+          || !same(active.get(0), "State", "RUNNING")
+          || first.stream().anyMatch(row -> same(row, "Id", text(active.get(0), "Id")))) {
+        return null;
+      }
+      current.add(active.get(0));
+      live++;
+    }
+    if (remaining != live || live > 1 || System.nanoTime() - deadline >= 0) {
+      return null;
+    }
+    List<JsonObject> head = instancePage(instances(api, target, job, 1), target, job, 1, total);
+    return head != null
+            && readbackKeys(first).equals(readbackKeys(head))
+            && System.nanoTime() - deadline < 0
+        ? current
         : null;
   }
 
@@ -1411,6 +1537,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private Reply instances(VolcengineOpenApi api, Target target, String job, int page)
       throws IOException {
+    return instances(api, target, job, page, null);
+  }
+
+  private Reply instances(VolcengineOpenApi api, Target target, String job, int page, String state)
+      throws IOException {
     Reply reply =
         api.call(
             "ListApplicationInstance",
@@ -1425,6 +1556,8 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                 Integer.toString(page),
                 "PageSize",
                 Integer.toString(INSTANCE_PAGE_SIZE),
+                "State",
+                state,
                 "SortField",
                 "StartTime",
                 "SortOrder",

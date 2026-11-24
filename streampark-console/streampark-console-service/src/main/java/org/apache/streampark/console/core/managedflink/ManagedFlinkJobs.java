@@ -622,10 +622,12 @@ public class ManagedFlinkJobs {
       frozen.setArtifactSize(number(releasedArtifact, "size_bytes"));
     }
     if (!frozen.getSpec().getDependencyIds().isEmpty()) {
+      // Each publication creates its own release ID. Its frozen command records each confirmed
+      // staging result, including when the first run of a published release failed.
       Map<String, Object> publication =
           store.require(
               "select command from t_flink_managed_operation where app_id=? and release_id=? "
-                  + "and command_type in ('PUBLISH','ROLLBACK','SUBMIT') and status='SUCCEEDED'",
+                  + "and command_type in ('PUBLISH','ROLLBACK','SUBMIT')",
               app,
               release);
       frozen.setDependencies(

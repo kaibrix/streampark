@@ -229,6 +229,26 @@ class VolcengineDispatchTest {
   }
 
   @Test
+  void recoversLostDirectReceiptOnlyForAUniqueInstanceOfTheMarkedRelease() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand cmd = fixture.step.getCommand();
+    cmd.setJobName("test-job");
+    cmd.setInstanceBeforeDispatch("");
+    cmd.getRequest().getRestore().setMode(RestoreMode.FROM_NEW);
+    cmd.setRestoreRef(null);
+    OperationStep direct = new OperationStep("direct", 2L, Action.SUBMIT, cmd, null, null, null);
+    fixture.publication.remove("AppDraftId");
+    fixture.directInstance = true;
+    Observation observed = fixture.provider.observe(fixture.context, direct, null);
+    assertThat(observed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+    assertThat(observed.getInstanceId()).isEqualTo("4");
+    fixture.ambiguous = true;
+    assertThat(fixture.provider.observe(fixture.context, direct, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    assertThat(fixture.actions).doesNotContain("StartApplicationInstance");
+  }
+
+  @Test
   void failedSavepointOnlyEndsTheMatchingOperation() {
     Fixture fixture = new Fixture(null);
     fixture.savepointStatus = "FAIL";
@@ -242,6 +262,7 @@ class VolcengineDispatchTest {
   }
 
   private static final class Fixture {
+    private boolean ambiguous;
     private String savepointStatus;
     private boolean directInstance;
     private String startTime = "2024-01-01 08:00:00";
@@ -370,6 +391,20 @@ class VolcengineDispatchTest {
 
     private JsonObject response(String action) {
       switch (action) {
+        case "ListGWSApplication":
+          return object("{\"Total\":1,\"Records\":[{\"Id\":\"3\",\"JobName\":\"test-job\"}]}");
+        case "ListApplicationInstance":
+          JsonObject page = object("{\"Current\":1,\"Size\":50}");
+          com.google.gson.JsonArray records = new com.google.gson.JsonArray();
+          records.add(response("GetApplicationInstance"));
+          if (ambiguous) {
+            JsonObject other = response("GetApplicationInstance");
+            other.addProperty("Id", "5");
+            records.add(other);
+          }
+          page.add("Records", records);
+          page.addProperty("Total", records.size());
+          return page;
         case "GetCallerIdentity":
           return object("{\"AccountId\":\"account\"}");
         case "GetApplicationInstance":
