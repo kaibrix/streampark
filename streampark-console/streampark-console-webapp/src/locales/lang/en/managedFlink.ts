@@ -21,6 +21,8 @@ export default {
   priority: 'Scheduling priority',
   schedulePolicy: 'Scheduling policy',
   scheduleTimeout: 'Scheduling timeout (seconds)',
+  directSubmit: 'Submit directly',
+  directConfirm: 'Start the saved configuration as a fresh instance without a cloud draft?',
   submitInstance: 'Submit instance with the published configuration',
   cloudJob: 'Cloud job',
   readCloud: 'Read cloud job',

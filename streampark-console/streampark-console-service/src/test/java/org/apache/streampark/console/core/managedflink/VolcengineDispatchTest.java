@@ -177,7 +177,51 @@ class VolcengineDispatchTest {
     assertThat(fixture.actions).doesNotContain("ValidateGWSApplicationDraft");
   }
 
+  @Test
+  void directSubmissionOmitsJobIdAndRequiresTheAcknowledgedJobAndReleaseMarker() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand cmd = fixture.step.getCommand();
+    cmd.getRequest().getRestore().setMode(RestoreMode.FROM_NEW);
+    cmd.setRestoreRef(null);
+    cmd.setSpecHash("fixture-hash");
+    OperationStep direct = new OperationStep("direct", 2L, Action.SUBMIT, cmd, null, null, null);
+    Observation ack = fixture.provider.dispatch(fixture.context, direct, () -> true);
+    assertThat(ack.getJobId()).isEqualTo("3");
+    assertThat(ack.getInstanceId()).isEqualTo("4");
+    assertThat(fixture.submitted.has("Id")).isFalse();
+    assertThat(fixture.submitted.getAsJsonObject("App").get("UniqueKey").getAsString())
+        .isEqualTo(cmd.getReleaseMarker());
+    assertThat(fixture.actions).containsExactly("GetCallerIdentity", "StartApplicationInstance");
+    assertThat(fixture.provider.observe(fixture.context, direct, ack).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    fixture.publication.remove("AppDraftId");
+    fixture.directInstance = true;
+    assertThat(fixture.provider.observe(fixture.context, direct, ack).getOutcome())
+        .isEqualTo(Outcome.CONFIRMED);
+    fixture
+        .publication
+        .getAsJsonObject("Conf")
+        .addProperty("pipeline.name", "someone-elses-release");
+    assertThat(fixture.provider.observe(fixture.context, direct, ack).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+  }
+
+  @Test
+  void failedSavepointOnlyEndsTheMatchingOperation() {
+    Fixture fixture = new Fixture(null);
+    fixture.savepointStatus = "FAIL";
+    FrozenCommand cmd = fixture.step.getCommand();
+    OperationStep step = new OperationStep("other", 2L, Action.SNAPSHOT, cmd, "draft", "3", null);
+    assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    step = new OperationStep("operation", 2L, Action.SNAPSHOT, cmd, "draft", "3", null);
+    assertThat(fixture.provider.observe(fixture.context, step, null).getCode())
+        .isEqualTo("CLOUD_SAVEPOINT_FAILED");
+  }
+
   private static final class Fixture {
+    private String savepointStatus;
+    private boolean directInstance;
     private boolean latestAvailable = true;
     private JsonObject submitted;
     private final Context context;
@@ -306,6 +350,14 @@ class VolcengineDispatchTest {
         case "GetCallerIdentity":
           return object("{\"AccountId\":\"account\"}");
         case "GetApplicationInstance":
+          if (directInstance) {
+            JsonObject instance = publication.deepCopy();
+            instance.addProperty("Id", "4");
+            instance.addProperty("JobId", "3");
+            // Direct instances have no provider draft VersionId.
+            instance.addProperty("State", "SUCCEEDED");
+            return instance;
+          }
           return object(
               "{\"Id\":\"7\",\"ProjectId\":\"project\",\"JobId\":\"3\",\"State\":\"RUNNING\"}");
         case "CancelApplicationInstance":
@@ -324,11 +376,19 @@ class VolcengineDispatchTest {
               ? object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}")
               : object("{\"EnableStartMethods\":[]}");
         case LAST_READ:
+          if (savepointStatus != null) {
+            return object(
+                "{\"SavepointInfos\":[{\"Description\":\"streampark-operation-operation\","
+                    + "\"Status\":\""
+                    + savepointStatus
+                    + "\"}]}");
+          }
           return object(
               "{\"SavepointInfos\":[{\"SavepointId\":\""
                   + SAVEPOINT
                   + "\",\"Status\":\"AVAILABLE\",\"SavepointPath\":\"fixture-path\"}]}");
         case "StartApplicationInstance":
+          return object("{\"Id\":\"3\",\"InstanceId\":\"4\"}");
         case START:
           return object("{\"InstanceId\":\"4\"}");
         default:

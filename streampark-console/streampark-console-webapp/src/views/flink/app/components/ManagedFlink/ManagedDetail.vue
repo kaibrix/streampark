@@ -356,11 +356,12 @@
     });
   }
 
-  function publish(name: 'publish' | 'rollback') {
+  function publish(name: 'publish' | 'rollback' | 'submit') {
     command(name, {
       draftRevision: job.value?.draftRevision,
       expectedReleaseId: job.value?.activeReleaseId,
       expectedEnvVersion: environment.value?.configVersion,
+      restore: name === 'submit' ? { mode: 'FROM_NEW', confirmedNew: true } : undefined,
       sourceReleaseId: name === 'rollback' ? sourceReleaseId.value : undefined,
     });
   }
@@ -565,6 +566,22 @@
                 >{{ t('managedFlink.validateCloudSql') }}</Button
               >
               <Popconfirm
+                v-if="
+                  can('SUBMIT_INSTANCE') &&
+                  (!job.cloudBound || job.directSubmission) &&
+                  hasPermission('app:start') &&
+                  hasPermission('app:create') &&
+                  hasPermission('app:release')
+                "
+                :title="t('managedFlink.directConfirm')"
+                @confirm="publish('submit')"
+              >
+                <Button :disabled="lock || dirty || running || !can(publishCapability)">{{
+                  t('managedFlink.directSubmit')
+                }}</Button>
+              </Popconfirm>
+              <Popconfirm
+                v-if="!job.directSubmission"
                 :title="t('managedFlink.publishConfirm')"
                 :disabled="lock"
                 @confirm="publish('publish')"
@@ -631,9 +648,11 @@
                 "
               />
             </template>
-            <Checkbox v-if="can('SUBMIT_INSTANCE')" v-model:checked="submitInstance">{{
-              t('managedFlink.submitInstance')
-            }}</Checkbox>
+            <Checkbox
+              v-if="can('SUBMIT_INSTANCE') && !job.directSubmission"
+              v-model:checked="submitInstance"
+              >{{ t('managedFlink.submitInstance') }}</Checkbox
+            >
             <Checkbox v-if="restore === 'FROM_NEW' && run" v-model:checked="fresh">{{
               t('managedFlink.confirmNew')
             }}</Checkbox>
@@ -717,7 +736,7 @@
           </List>
         </TabPane>
         <TabPane key="release" :tab="t('managedFlink.versions')">
-          <Space class="mb-4">
+          <Space v-if="!job.directSubmission" class="mb-4">
             <Select
               v-model:value="sourceReleaseId"
               style="min-width: 180px"

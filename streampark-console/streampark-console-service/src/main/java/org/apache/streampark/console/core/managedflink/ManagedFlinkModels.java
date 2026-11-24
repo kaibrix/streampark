@@ -18,6 +18,7 @@
 package org.apache.streampark.console.core.managedflink;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
@@ -40,6 +41,7 @@ public final class ManagedFlinkModels {
   }
 
   public enum CommandType {
+    SUBMIT,
     PUBLISH,
     ROLLBACK,
     RESTART,
@@ -49,6 +51,7 @@ public final class ManagedFlinkModels {
   }
 
   public enum Action {
+    SUBMIT,
     STAGE_ARTIFACT,
     STAGE_DEPENDENCY,
     CREATE_DRAFT,
@@ -123,6 +126,9 @@ public final class ManagedFlinkModels {
     private String artifactPrefix;
     private String tlsTopic;
     private String tlsRegion;
+    // These are derived from the local receipt, never accepted from an environment or job request.
+    @JsonIgnore private String directJobId;
+    @JsonIgnore private String directReleaseId;
   }
 
   @Value

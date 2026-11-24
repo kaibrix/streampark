@@ -90,7 +90,7 @@ class ManagedFlinkReconciler {
         observed =
             catalog
                 .provider(text(conn, "provider"))
-                .inspect(catalog.context(conn, env, null), text(job, "provider_job_id"));
+                .inspect(catalog.jobContext(conn, env, null, job), text(job, "provider_job_id"));
       } catch (RuntimeException e) {
         log.info("Managed Flink read failed for app {} ({})", app, e.getClass().getSimpleName());
         observed = new CloudState(ReadStatus.STALE, null, null, null, null, null, 0);

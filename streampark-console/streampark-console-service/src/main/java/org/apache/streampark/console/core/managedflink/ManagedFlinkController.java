@@ -361,7 +361,7 @@ public class ManagedFlinkController {
     return ok(options);
   }
 
-  @PostMapping("/apps/{appId}/{action:publish|rollback|start|restart|stop|snapshots}")
+  @PostMapping("/apps/{appId}/{action:submit|publish|rollback|start|restart|stop|snapshots}")
   ResponseEntity<Body<Map<String, Object>>> command(
       @RequestParam long teamId,
       @PathVariable long appId,

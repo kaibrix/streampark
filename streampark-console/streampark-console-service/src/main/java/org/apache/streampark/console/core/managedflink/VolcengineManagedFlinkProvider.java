@@ -566,22 +566,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           }
           Map<String, String> query = scope(target);
           query.put("Id", step.getDraftId());
-          ManagedFlinkModels.Spec spec = step.getCommand().getSpec();
-          JsonObject deployment =
-              fields(
-                  "Queue",
-                  target.getResourcePoolId(),
-                  "ResourcePool",
-                  target.getResourcePoolName(),
-                  "Priority",
-                  Objects.toString(spec.getPriority(), "1"),
-                  "SchedulePolicy",
-                  VolcengineExecutable.schedulePolicy(spec));
-          if ("GANG".equals(VolcengineExecutable.schedulePolicy(spec))) {
-            deployment.addProperty(
-                "ScheduleTimeout",
-                spec.getScheduleTimeout() == null ? 60 : spec.getScheduleTimeout());
-          }
+          JsonObject deployment = deployment(target, step.getCommand().getSpec());
           return write(
               permit,
               () ->
@@ -589,6 +574,28 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                       api.call("DeployGWSApplicationDraft", GWS_VERSION, query, deployment),
                       null,
                       "Id"));
+        case SUBMIT:
+          if (!supportedSpec(context, step)
+              || AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
+                      target.getEngineRef())
+                  == null) {
+            return rejected("UNVERIFIED_SPEC");
+          }
+          if (step.getProviderJobId() != null
+              && (!Objects.equals(step.getProviderJobId(), target.getDirectJobId())
+                  || step.getCommand().getProviderVersion() == null
+                  || !step.getCommand()
+                      .getProviderVersion()
+                      .equals(revision(application(api, target, step.getProviderJobId()))))) {
+            return rejected("DIRECT_JOB_NOT_VERIFIED");
+          }
+          JsonObject direct =
+              instanceRequest(
+                  context,
+                  step,
+                  deployment(target, step.getCommand().getSpec()),
+                  fields("Type", "FROM_NEW"));
+          return write(permit, () -> submitInstance(api, direct));
         case START:
           return start(api, context, step, permit);
         case SNAPSHOT:
@@ -788,24 +795,44 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           return observation;
         case PUBLISH:
           return observedPublish(api, target, step, previous, observation);
+        case SUBMIT:
         case START:
           if (previous == null || previous.getInstanceId() == null) {
             return awaiting();
           }
-          JsonObject instance =
-              instance(api, target, step.getProviderJobId(), previous.getInstanceId());
+          String submittedJob = step.getProviderJobId();
+          String expectedVersion = step.getCommand().getProviderVersion();
+          if (step.getAction() == ManagedFlinkModels.Action.SUBMIT) {
+            if (previous.getJobId() == null
+                || (submittedJob != null && !submittedJob.equals(previous.getJobId()))) {
+              return awaiting();
+            }
+            submittedJob = previous.getJobId();
+            JsonObject direct =
+                application(api, target, submittedJob, step.getCommand().getReleaseMarker());
+            if (!VolcengineExecutable.matches(direct, step, false)
+                || !VolcengineExecutable.matchesScheduling(direct, step.getCommand().getSpec())) {
+              return awaiting();
+            }
+            expectedVersion = revision(direct);
+            observation.setSpecHash(step.getCommand().getSpecHash());
+          }
+          JsonObject instance = instance(api, target, submittedJob, previous.getInstanceId());
           if (instance == null
               || !VolcengineExecutable.matches(instance, step, false)
-              || !Objects.equals(revision(instance), step.getCommand().getProviderVersion())
+              || expectedVersion == null
+              || !expectedVersion.equals(revision(instance))
               || !Arrays.asList("RUNNING", "FINISHED", "FAILED").contains(runState(instance))
-              || text(instance, "VersionId") == null
+              || (step.getAction() != ManagedFlinkModels.Action.SUBMIT
+                  && target.getDirectJobId() == null
+                  && text(instance, "VersionId") == null)
               || !matchesRestore(api, step, instance)) {
             return awaiting();
           }
-          observation.setJobId(step.getProviderJobId());
+          observation.setJobId(submittedJob);
           observation.setInstanceId(previous.getInstanceId());
           observation.setRuntimeId(text(instance, "ApplicationId"));
-          observation.setVersion(step.getCommand().getProviderVersion());
+          observation.setVersion(expectedVersion);
           observation.setRemoteVersionId(text(instance, "VersionId"));
           observation.setRunState(runState(instance));
           observation.setRestoredFrom(step.getCommand().getRestoreRef());
@@ -816,6 +843,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
               points.stream()
                   .filter(point -> same(point, "Description", snapshotName(step)))
                   .collect(Collectors.toList());
+          if (matches.size() == 1
+              && same(matches.get(0), "Status", "FAIL")
+              && application(api, target, step.getProviderJobId()) != null) {
+            return rejected("CLOUD_SAVEPOINT_FAILED");
+          }
           if (matches.size() != 1
               || !availableSavepoint(matches.get(0))
               || !isCurrentRunning(api, target, step)) {
@@ -938,26 +970,53 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       parameters.addProperty("Type", "FROM_SAVEPOINT");
       parameters.addProperty("SavepointId", step.getCommand().getRestoreRef());
     }
-    boolean submit = step.getCommand().getRequest().isSubmitInstance();
+    boolean submit =
+        step.getCommand().getRequest().isSubmitInstance() || target.getDirectJobId() != null;
     final JsonObject payload =
-        submit ? instanceRequest(context, step, published, parameters) : parameters;
+        submit
+            ? instanceRequest(context, step, object(published, "DeployRequest"), parameters)
+            : parameters;
     return write(
         permit,
         () -> {
-          Reply result =
-              api.call(
-                  submit ? "StartApplicationInstance" : "StartGWSApplication",
-                  submit ? FLINK_VERSION : GWS_VERSION,
-                  scope(target),
-                  payload);
+          if (submit) {
+            return submitInstance(api, payload);
+          }
+          Reply result = api.call("StartGWSApplication", GWS_VERSION, scope(target), payload);
           Observation acknowledgement = ack(result, null, null);
           acknowledgement.setInstanceId(text(result.data(), "InstanceId"));
           return acknowledgement;
         });
   }
 
+  private Observation submitInstance(VolcengineOpenApi api, JsonObject payload) throws IOException {
+    Reply result =
+        api.call("StartApplicationInstance", FLINK_VERSION, Collections.emptyMap(), payload);
+    Observation acknowledgement = ack(result, null, "Id");
+    acknowledgement.setInstanceId(text(result.data(), "InstanceId"));
+    return acknowledgement;
+  }
+
+  private JsonObject deployment(Target target, ManagedFlinkModels.Spec spec) {
+    JsonObject deployment =
+        fields(
+            "Queue",
+            target.getResourcePoolId(),
+            "ResourcePool",
+            target.getResourcePoolName(),
+            "Priority",
+            Objects.toString(spec.getPriority(), "1"),
+            "SchedulePolicy",
+            VolcengineExecutable.schedulePolicy(spec));
+    if ("GANG".equals(VolcengineExecutable.schedulePolicy(spec))) {
+      deployment.addProperty(
+          "ScheduleTimeout", spec.getScheduleTimeout() == null ? 60 : spec.getScheduleTimeout());
+    }
+    return deployment;
+  }
+
   private JsonObject instanceRequest(
-      Context context, OperationStep step, JsonObject published, JsonObject restore) {
+      Context context, OperationStep step, JsonObject deployment, JsonObject restore) {
     ManagedFlinkModels.Spec spec = step.getCommand().getSpec();
     Gson gson = new Gson();
     AppForStartApplicationInstanceInput app =
@@ -972,13 +1031,14 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                 AppForStartApplicationInstanceInput.JobTypeEnum.fromValue(
                     VolcengineExecutable.providerType(spec)))
             .deployRequest(
-                gson.fromJson(
-                    object(published, "DeployRequest"),
-                    DeployRequestForStartApplicationInstanceInput.class))
+                gson.fromJson(deployment, DeployRequestForStartApplicationInstanceInput.class))
             .conf(VolcengineExecutable.settings(step).toString());
+    if (step.getAction() == ManagedFlinkModels.Action.SUBMIT && step.getProviderJobId() == null) {
+      // Without UniqueKey the service can start an instance without creating a managed job.
+      app.uniqueKey(step.getCommand().getReleaseMarker());
+    }
     if (spec.getType() == JobType.SQL) {
       app.sqlText(spec.getSql());
-
     } else {
       app.jar(VolcengineExecutable.artifact(step))
           .mainClass(spec.getMainClass())
@@ -1140,6 +1200,15 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private JsonObject application(VolcengineOpenApi api, Target target, String id)
       throws IOException {
+    return application(
+        api,
+        target,
+        id,
+        id != null && id.equals(target.getDirectJobId()) ? target.getDirectReleaseId() : null);
+  }
+
+  private JsonObject application(
+      VolcengineOpenApi api, Target target, String id, String directRelease) throws IOException {
     if (id == null) {
       return null;
     }
@@ -1153,11 +1222,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     JsonObject application = reply.data();
     if (!reply.ok()
         || !scoped(application, target, id)
-        || !same(object(application, "DeployRequest"), "Queue", target.getResourcePoolId())
-        || draft(api, target, text(application, "AppDraftId")) == null) {
+        || !same(object(application, "DeployRequest"), "Queue", target.getResourcePoolId())) {
       return null;
     }
-    return application;
+    String draftId = text(application, "AppDraftId");
+    if (directRelease != null) {
+      JsonObject conf = VolcengineExecutable.objectValue(application.get("Conf"));
+      return draftId == null && same(conf, "pipeline.name", "streampark-release-" + directRelease)
+          ? application
+          : null;
+    }
+    return draft(api, target, draftId) == null ? null : application;
   }
 
   private JsonObject instance(VolcengineOpenApi api, Target target, String job, String id)

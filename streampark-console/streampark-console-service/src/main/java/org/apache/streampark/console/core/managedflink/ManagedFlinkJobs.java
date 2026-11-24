@@ -186,6 +186,9 @@ public class ManagedFlinkJobs {
     result.put("pendingOperationId", text(job, "pending_operation_id"));
     result.put("syncStatus", text(job, "sync_status"));
     result.put("cloudBound", text(job, "provider_job_id") != null);
+    result.put(
+        "directSubmission",
+        text(job, "provider_job_id") != null && text(job, "provider_draft_id") == null);
     result.put("observedAt", job.get("observed_at"));
     return result;
   }
@@ -230,7 +233,7 @@ public class ManagedFlinkJobs {
     return catalog
         .provider(text(connection, "provider"))
         .cloudInstance(
-            catalog.context(connection, env, null),
+            catalog.jobContext(connection, env, null, job),
             text(job, "provider_job_id"),
             required(instanceId, 191));
   }
@@ -242,7 +245,8 @@ public class ManagedFlinkJobs {
     Map<String, Object> connection = catalog.connection(team, text(env, "connection_id"));
     return catalog
         .provider(text(connection, "provider"))
-        .cloudJob(catalog.context(connection, env, null), text(job, "provider_job_id"), page);
+        .cloudJob(
+            catalog.jobContext(connection, env, null, job), text(job, "provider_job_id"), page);
   }
 
   Map<String, Object> diagnostics(
@@ -258,7 +262,7 @@ public class ManagedFlinkJobs {
     return catalog
         .provider(text(connection, "provider"))
         .diagnostics(
-            catalog.context(connection, env, null),
+            catalog.jobContext(connection, env, null, job),
             text(job, "provider_job_id"),
             text(run, "provider_instance_id"),
             source,
@@ -288,7 +292,7 @@ public class ManagedFlinkJobs {
     return catalog
         .provider(text(connection, "provider"))
         .logs(
-            catalog.context(connection, env, null),
+            catalog.jobContext(connection, env, null, job),
             text(job, "provider_job_id"),
             text(run, "provider_instance_id"),
             new LogQuery(actor, from, until, component, level, keyword, cursor));
@@ -297,6 +301,10 @@ public class ManagedFlinkJobs {
   @Transactional(isolation = Isolation.READ_COMMITTED)
   public String enqueue(long team, long app, CommandType type, String key, Command cmd) {
     long actor = catalog.authorize(team, permission(type));
+    if (type == CommandType.SUBMIT) {
+      catalog.authorize(team, "app:start");
+      catalog.authorize(team, "app:create");
+    }
     if (type == CommandType.RESTART) {
       catalog.authorize(team, "app:cancel");
     }
@@ -343,7 +351,30 @@ public class ManagedFlinkJobs {
 
     String release = text(job, "active_release_id");
     Map<String, Object> current = currentRun(job);
-    if (type == CommandType.PUBLISH || type == CommandType.ROLLBACK) {
+    if (type == CommandType.SUBMIT || type == CommandType.PUBLISH || type == CommandType.ROLLBACK) {
+      if (type == CommandType.SUBMIT) {
+        capability(capabilities, "SUBMIT_INSTANCE");
+        check(
+            text(job, "provider_draft_id") == null,
+            HttpStatus.CONFLICT,
+            "A published cloud draft already exists");
+        if (release != null) {
+          check(
+              cmd.getRestore() != null && cmd.getRestore().isConfirmedNew(),
+              HttpStatus.UNPROCESSABLE_ENTITY,
+              "Confirm a fresh start when submitting a new version");
+        }
+        Restore restore = new Restore();
+        restore.setMode(RestoreMode.FROM_NEW);
+        Command submitRequest = store.decode(store.encode(cmd), Command.class);
+        submitRequest.setRestore(restore);
+        frozen.setRequest(submitRequest);
+      } else {
+        check(
+            text(job, "provider_job_id") == null || text(job, "provider_draft_id") != null,
+            HttpStatus.CONFLICT,
+            "Use direct submission for this job");
+      }
       release = freezeRelease(app, type, cmd, job, env, provider, capabilities, frozen, current);
     } else if (type == CommandType.START || type == CommandType.RESTART) {
       boolean restart = type == CommandType.RESTART;
@@ -375,7 +406,7 @@ public class ManagedFlinkJobs {
             type.name(),
             store.encode(frozen),
             release,
-            now + 5 * 60_000,
+            now + (frozen.getActions().contains(Action.SNAPSHOT) ? 15 : 5) * 60_000L,
             now,
             actor,
             now,
@@ -472,6 +503,11 @@ public class ManagedFlinkJobs {
       dep.setLocalRef(text(row, "object_ref"));
       frozen.getDependencies().add(dep);
       actions.add(index++, Action.STAGE_DEPENDENCY);
+    }
+    if (type == CommandType.SUBMIT) {
+      actions.removeIf(
+          action -> action != Action.STAGE_ARTIFACT && action != Action.STAGE_DEPENDENCY);
+      actions.add(Action.SUBMIT);
     }
     frozen.setActions(actions);
     String release = id();
@@ -580,7 +616,7 @@ public class ManagedFlinkJobs {
       Map<String, Object> publication =
           store.require(
               "select command from t_flink_managed_operation where app_id=? and release_id=? "
-                  + "and command_type in ('PUBLISH','ROLLBACK') and status='SUCCEEDED'",
+                  + "and command_type in ('PUBLISH','ROLLBACK','SUBMIT') and status='SUCCEEDED'",
               app,
               release);
       frozen.setDependencies(
@@ -707,7 +743,7 @@ public class ManagedFlinkJobs {
       state =
           catalog
               .provider(text(conn, "provider"))
-              .inspect(catalog.context(conn, env, target), providerJob);
+              .inspect(catalog.jobContext(conn, env, target, job), providerJob);
     } catch (RuntimeException error) {
       throw new ResponseStatusException(
           HttpStatus.CONFLICT, "Cloud job stop could not be confirmed");

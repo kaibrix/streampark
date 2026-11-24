@@ -21,6 +21,8 @@ export default {
   priority: '调度优先级',
   schedulePolicy: '调度策略',
   scheduleTimeout: '调度超时（秒）',
+  directSubmit: '直接提交',
+  directConfirm: '使用已保存的配置全新启动实例，跳过云草稿与发布步骤？',
   submitInstance: '使用已发布配置提交实例',
   cloudJob: '云端作业',
   readCloud: '查询云端作业',

@@ -173,7 +173,7 @@ class ManagedFlinkWorker {
     ManagedFlinkProvider provider = catalog.provider(text(connection, "provider"));
     Context context;
     try {
-      context = catalog.context(connection, env, command.getTarget());
+      context = catalog.jobContext(connection, env, command.getTarget(), job);
     } catch (RuntimeException e) {
       tx.executeWithoutResult(
           t -> {
@@ -484,7 +484,8 @@ class ManagedFlinkWorker {
       defer(op, evidence.getRetryNotBefore());
       return;
     }
-    if (step.getAction() == Action.START && "FAILED".equals(evidence.getRunState())) {
+    if ((step.getAction() == Action.START || step.getAction() == Action.SUBMIT)
+        && "FAILED".equals(evidence.getRunState())) {
       if (evidence.getCode() == null) {
         evidence.setCode("RUNTIME_FAILED");
       }
@@ -542,12 +543,16 @@ class ManagedFlinkWorker {
         return Objects.equals(step.getDraftId(), result.getDraftId())
             && step.getDraftId() != null
             && Objects.equals(step.getCommand().getSpecHash(), result.getSpecHash());
+      case SUBMIT:
       case PUBLISH:
         if (!hasId(result.getJobId(), 191)
             || !hasId(result.getVersion(), 191)
             || !Objects.equals(step.getCommand().getSpecHash(), result.getSpecHash())
             || (step.getProviderJobId() != null
                 && !step.getProviderJobId().equals(result.getJobId()))) {
+          return false;
+        }
+        if (step.getAction() == Action.SUBMIT && !start(job, step, result, release, now)) {
           return false;
         }
         store
@@ -570,7 +575,10 @@ class ManagedFlinkWorker {
         store.markApplicationReleased(app);
         return true;
       case START:
-        return start(job, step, result, release, now);
+        return hasId(step.getProviderJobId(), 191)
+            && step.getProviderJobId().equals(result.getJobId())
+            && Objects.equals(step.getCommand().getProviderVersion(), result.getVersion())
+            && start(job, step, result, release, now);
       case STOP:
         if (!sameInstance(step, result) || !"STOPPED".equals(result.getRunState())) {
           return false;
@@ -631,9 +639,6 @@ class ManagedFlinkWorker {
     boolean failed = "FAILED".equals(runState);
     if ((!running && !failed && !"FINISHED".equals(runState))
         || !hasId(result.getInstanceId(), 191)
-        || !hasId(step.getProviderJobId(), 191)
-        || !step.getProviderJobId().equals(result.getJobId())
-        || !Objects.equals(step.getCommand().getProviderVersion(), result.getVersion())
         || (!failed
             && !Objects.equals(step.getCommand().getRestoreRef(), result.getRestoredFrom()))) {
       return false;
@@ -718,7 +723,8 @@ class ManagedFlinkWorker {
               operation);
     }
     if (!"SUCCEEDED".equals(status)
-        && ("PUBLISH".equals(text(op, "command_type"))
+        && ("SUBMIT".equals(text(op, "command_type"))
+            || "PUBLISH".equals(text(op, "command_type"))
             || "ROLLBACK".equals(text(op, "command_type")))) {
       store
           .jdbc()

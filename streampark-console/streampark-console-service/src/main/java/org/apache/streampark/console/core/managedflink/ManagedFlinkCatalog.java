@@ -388,6 +388,28 @@ public class ManagedFlinkCatalog {
     return adapter;
   }
 
+  Context jobContext(
+      Map<String, Object> conn, Map<String, Object> env, Target frozen, Map<String, Object> job) {
+    Context context = context(conn, env, frozen);
+    String releaseId = text(job, "active_release_id");
+    if (releaseId != null
+        && text(job, "provider_draft_id") == null
+        && text(job, "provider_job_id") != null
+        && scope(conn, env).equals(text(job, "scope_key"))) {
+      Map<String, Object> released =
+          store.find(
+              "select target from t_flink_managed_release where id=? and app_id=? and status='PUBLISHED'",
+              releaseId,
+              job.get("app_id"));
+      if (released != null
+          && context.getTarget().equals(store.decode(text(released, "target"), Target.class))) {
+        context.getTarget().setDirectJobId(text(job, "provider_job_id"));
+        context.getTarget().setDirectReleaseId(releaseId);
+      }
+    }
+    return context;
+  }
+
   String scope(Map<String, Object> conn, Map<String, Object> env) {
     return hash(
         store.encode(

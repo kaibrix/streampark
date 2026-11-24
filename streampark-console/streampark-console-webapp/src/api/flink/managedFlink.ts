@@ -43,6 +43,7 @@ export interface Job {
   pendingOperationId?: string;
   syncStatus: string;
   cloudBound?: boolean;
+  directSubmission?: boolean;
   observedAt?: number | string;
   spec: Spec;
 }
