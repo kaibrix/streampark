@@ -864,7 +864,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           observation.setInstanceId(acknowledgedInstance);
           observation.setRuntimeId(text(instance, "ApplicationId"));
           if (text(instance, "StartTime") != null) {
-            observation.setInstanceStartedAt(startedAt(instance));
+            try {
+              observation.setInstanceStartedAt(startedAt(instance));
+            } catch (DateTimeParseException ignored) {
+              // An optional display timestamp does not affect the instance identity or state.
+            }
           }
           observation.setVersion(expectedVersion);
           observation.setRemoteVersionId(text(instance, "VersionId"));

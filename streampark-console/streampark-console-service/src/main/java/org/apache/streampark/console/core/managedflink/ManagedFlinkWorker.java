@@ -664,7 +664,8 @@ class ManagedFlinkWorker {
               app,
               step.getCommand().getProviderInstance());
     }
-    long started = result.getInstanceStartedAt() > 0 ? result.getInstanceStartedAt() : now;
+    long cloudStart = result.getInstanceStartedAt();
+    long started = cloudStart > 0 && cloudStart <= now ? cloudStart : now;
     String run = id();
     store
         .jdbc()

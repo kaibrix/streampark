@@ -378,6 +378,7 @@ class ManagedFlinkLifecycleTest {
             if (step.getAction() == Action.START
                 && step.getCommand().getProviderInstance() != null) {
               result.setRunState("FINISHED");
+              result.setInstanceStartedAt(1704067200000L);
             }
             return result;
           }
@@ -391,6 +392,14 @@ class ManagedFlinkLifecycleTest {
     command.setRestore(restore);
     test.complete(test.enqueue(CommandType.START, "start", command));
     String old = test.jobField("current_run_id");
+    long started =
+        test.sql.queryForObject("select started_at from t_flink_managed_run", Long.class);
+    assertThat(started).isPositive();
+    assertThat(
+            test.sql
+                .queryForObject("select start_time from t_flink_app", java.sql.Timestamp.class)
+                .getTime())
+        .isEqualTo(started);
     command.setExpectedRunId(old);
     restore.setConfirmedNew(true);
     test.complete(test.enqueue(CommandType.RESTART, "restart", command));
@@ -404,6 +413,17 @@ class ManagedFlinkLifecycleTest {
                 String.class,
                 test.jobField("current_run_id")))
         .isEqualTo("FINISHED");
+    assertThat(
+            test.sql.queryForObject(
+                "select started_at from t_flink_managed_run where id=?",
+                Long.class,
+                test.jobField("current_run_id")))
+        .isEqualTo(1704067200000L);
+    assertThat(
+            test.sql
+                .queryForObject("select start_time from t_flink_app", java.sql.Timestamp.class)
+                .getTime())
+        .isEqualTo(1704067200000L);
   }
 
   @Test
@@ -415,6 +435,7 @@ class ManagedFlinkLifecycleTest {
             Observation result = super.observe(context, step, ack);
             if (step.getAction() == Action.START) {
               result.setRunState("FAILED");
+              result.setInstanceStartedAt(Long.MAX_VALUE);
             }
             return result;
           }
@@ -433,6 +454,11 @@ class ManagedFlinkLifecycleTest {
     test.first.advance(operation);
 
     assertThat(test.status(operation)).isEqualTo("FAILED");
+    assertThat(
+            test.sql.queryForObject(
+                "select count(*) from t_flink_managed_run where started_at=ended_at",
+                Integer.class))
+        .isEqualTo(1);
     assertThat(test.jobField("active_release_id")).isEqualTo(release);
     assertThat(test.jobField("pending_operation_id")).isNull();
     assertThat(

@@ -213,6 +213,10 @@ class VolcengineDispatchTest {
     Observation confirmed = fixture.provider.observe(fixture.context, direct, ack);
     assertThat(confirmed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
     assertThat(confirmed.getInstanceStartedAt()).isEqualTo(1704067200000L);
+    fixture.startTime = "invalid";
+    Observation withoutStart = fixture.provider.observe(fixture.context, direct, ack);
+    assertThat(withoutStart.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+    assertThat(withoutStart.getInstanceStartedAt()).isZero();
     fixture
         .publication
         .getAsJsonObject("Conf")
@@ -237,6 +241,7 @@ class VolcengineDispatchTest {
   private static final class Fixture {
     private String savepointStatus;
     private boolean directInstance;
+    private String startTime = "2024-01-01 08:00:00";
     private boolean latestAvailable = true;
     private JsonObject submitted;
     private final Context context;
@@ -371,7 +376,7 @@ class VolcengineDispatchTest {
             instance.addProperty("JobId", "3");
             // Direct instances have no provider draft VersionId.
             instance.addProperty("State", "SUCCEEDED");
-            instance.addProperty("StartTime", "2024-01-01 08:00:00");
+            instance.addProperty("StartTime", startTime);
             return instance;
           }
           return object(
