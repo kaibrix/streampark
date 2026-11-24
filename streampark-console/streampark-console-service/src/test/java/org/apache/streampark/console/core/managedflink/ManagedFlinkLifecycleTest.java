@@ -63,10 +63,34 @@ import java.util.function.BooleanSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class ManagedFlinkLifecycleTest {
+
+  @Test
+  void rejectsUnsupportedVolcengine22JobTypesBeforeCreatingADraft() {
+    Fixture fixture = new Fixture(new VolcengineManagedFlinkProvider(null, null));
+    fixture.sql.update(
+        "update t_flink_managed_env set target=? where id='env'",
+        "{\"engineRef\":\"FLINK_VERSION_2_2\"}");
+    JobInput input = new JobInput();
+    input.setName("engine-test");
+    input.setEnvironmentId("env");
+    Spec spec = new Spec();
+    input.setSpec(spec);
+    spec.setType(JobType.SQL);
+    spec.setBatchMode(true);
+    assertThatThrownBy(() -> fixture.jobs.create(100000L, input))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("supports streaming SQL");
+    spec.setType(JobType.JAR);
+    spec.setBatchMode(false);
+    assertThatThrownBy(() -> fixture.jobs.create(100000L, input))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("supports streaming SQL");
+  }
 
   @Test
   void takeoverUsesEvidenceAndFencesLateAck() throws Exception {

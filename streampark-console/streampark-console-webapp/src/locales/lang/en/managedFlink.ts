@@ -42,6 +42,8 @@ export default {
   title: 'Managed Flink',
   create: 'Create managed Flink job',
   failed: 'Managed Flink request failed',
+  volcengineJobNameRule:
+    'Use 1–48 characters. Start and end with a letter (A–Z, a–z) or digit. Dots, underscores and hyphens are allowed in between.',
   name: 'Name',
   environment: 'Managed environment',
   type: 'Job type',

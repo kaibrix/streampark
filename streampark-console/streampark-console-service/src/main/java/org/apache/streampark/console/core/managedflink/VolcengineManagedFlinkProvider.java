@@ -134,10 +134,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     return binding.permitsConnection(team, account);
   }
 
+  static String jobTypeIssue(ManagedFlinkModels.Spec spec, String engine) {
+    return FLINK_2_2.equals(engine) && (spec.getType() != JobType.SQL || spec.isBatchMode())
+        ? "This Volcengine engine supports streaming SQL jobs"
+        : null;
+  }
+
   @Override
   public String specIssue(ManagedFlinkModels.Spec spec, String engine) {
-    if (FLINK_2_2.equals(engine) && (spec.getType() != JobType.SQL || spec.isBatchMode())) {
-      return "This Volcengine engine supports streaming SQL jobs";
+    String issue = jobTypeIssue(spec, engine);
+    if (issue != null) {
+      return issue;
     }
     if (!VolcengineExecutable.supportedConfiguration(spec)) {
       return "Flink configuration exceeds the configured Volcengine runtime settings";
@@ -169,11 +176,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       report.put("PUBLISH_SQL", "AVAILABLE");
       report.put("START", "AVAILABLE");
       report.put("CLOUD_RESTART", "AVAILABLE");
-      if (AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
-              context.getTarget().getEngineRef())
-          != null) {
-        report.put("SUBMIT_INSTANCE", "AVAILABLE");
-      }
+      report.put("SUBMIT_INSTANCE", "AVAILABLE");
       report.put("STOP", "AVAILABLE");
       if (binding.permitsArtifacts(context)) {
         report.put("PUBLISH_SQL_UDF", "AVAILABLE");
@@ -602,10 +605,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                       null,
                       "Id"));
         case SUBMIT:
-          if (!supportedSpec(context, step)
-              || AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
-                      target.getEngineRef())
-                  == null) {
+          if (!supportedSpec(context, step) || !canSubmitInstance(context, step)) {
             return rejected("UNVERIFIED_SPEC");
           }
           if (step.getProviderJobId() != null
@@ -981,10 +981,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         || !Objects.equals(revision(published), step.getCommand().getProviderVersion())) {
       return rejected("PUBLISHED_REVISION_MISMATCH");
     }
-    if (step.getCommand().getRequest().isSubmitInstance()
-        && AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
-                context.getTarget().getEngineRef())
-            == null) {
+    if ((step.getCommand().getRequest().isSubmitInstance()
+            || context.getTarget().getDirectJobId() != null)
+        && !canSubmitInstance(context, step)) {
       return rejected("UNSUPPORTED_INSTANCE_ENGINE");
     }
     RestoreMode mode = step.getCommand().getRequest().getRestore().getMode();
@@ -1105,6 +1104,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     return deployment;
   }
 
+  private boolean canSubmitInstance(Context context, OperationStep step) {
+    String engine = step.getCommand().getEngineRef();
+    return ENGINES.contains(engine) && Objects.equals(engine, context.getTarget().getEngineRef());
+  }
+
   private JsonObject instanceRequest(
       Context context, OperationStep step, JsonObject deployment, JsonObject restore) {
     ManagedFlinkModels.Spec spec = step.getCommand().getSpec();
@@ -1114,9 +1118,6 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             .projectId(context.getTarget().getProjectId())
             .accountId(context.getAccountRef())
             .jobName(step.getCommand().getJobName())
-            .engineVersion(
-                AppForStartApplicationInstanceInput.EngineVersionEnum.fromValue(
-                    step.getCommand().getEngineRef()))
             .jobType(
                 AppForStartApplicationInstanceInput.JobTypeEnum.fromValue(
                     VolcengineExecutable.providerType(spec)))
@@ -1146,7 +1147,10 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                 new RestoreStrategyForStartApplicationInstanceInput()
                     .type(text(restore, "Type"))
                     .savepointId(text(restore, "SavepointId")));
-    return gson.toJsonTree(request).getAsJsonObject();
+    JsonObject payload = gson.toJsonTree(request).getAsJsonObject();
+    // The SDK enum predates newer engines available through the same API.
+    payload.getAsJsonObject("App").addProperty("EngineVersion", step.getCommand().getEngineRef());
+    return payload;
   }
 
   private boolean isCurrentRunning(VolcengineOpenApi api, Target target, OperationStep step)

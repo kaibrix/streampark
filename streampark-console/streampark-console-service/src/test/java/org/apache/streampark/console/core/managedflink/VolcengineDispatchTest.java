@@ -126,6 +126,30 @@ class VolcengineDispatchTest {
   }
 
   @Test
+  void directSubmissionRejectsAChangedEnvironmentEngineBeforeWriting() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand command = fixture.step.getCommand();
+    command.setEngineRef("FLINK_VERSION_1_20");
+    OperationStep submit =
+        new OperationStep("direct", 2L, Action.SUBMIT, command, null, null, null);
+    Observation result = fixture.provider.dispatch(fixture.context, submit, () -> true);
+    assertThat(result.getOutcome()).isEqualTo(Outcome.REJECTED);
+    assertThat(fixture.actions).doesNotContain("StartApplicationInstance");
+  }
+
+  @Test
+  void submitsTheConfiguredEngineWhenItIsMissingFromTheSdkEnum() {
+    for (String engine : Arrays.asList("FLINK_VERSION_1_20", "FLINK_VERSION_2_2")) {
+      Fixture fixture = new Fixture(null, engine);
+      fixture.step.getCommand().getRequest().setSubmitInstance(true);
+      Observation ack = fixture.provider.dispatch(fixture.context, fixture.step, () -> true);
+      assertThat(ack.getInstanceId()).as(engine).isEqualTo("4");
+      assertThat(fixture.submitted.getAsJsonObject("App").get("EngineVersion").getAsString())
+          .isEqualTo(engine);
+    }
+  }
+
+  @Test
   void publicInstanceSubmissionSendsFrozenSqlAndExplicitRestoreStrategy() {
     Fixture fixture = new Fixture(null);
     fixture.step.getCommand().getRequest().setSubmitInstance(true);
@@ -253,9 +277,16 @@ class VolcengineDispatchTest {
     private final List<String> actions = new ArrayList<>();
     private final JsonObject publication;
 
+    private final String engine;
+
     Fixture(String failingAction) {
+      this(failingAction, ENGINE);
+    }
+
+    Fixture(String failingAction, String engine) {
+      this.engine = engine;
       Target target = new Target();
-      target.setEngineRef(ENGINE);
+      target.setEngineRef(engine);
       target.setProjectId("project");
       target.setDirectoryId("directory");
       target.setResourcePoolId("pool");
@@ -272,7 +303,7 @@ class VolcengineDispatchTest {
       FrozenCommand command = new FrozenCommand();
       command.setRequest(request);
       command.setSpec(spec);
-      command.setEngineRef(ENGINE);
+      command.setEngineRef(engine);
       command.setReleaseMarker("frozen-release");
       command.setRestoreRef(SAVEPOINT);
       step = new OperationStep("operation", 2L, Action.START, command, "draft", "3", null);
@@ -281,7 +312,7 @@ class VolcengineDispatchTest {
               "{\"Id\":\"3\",\"ProjectId\":\"project\",\"AppDraftId\":\"draft\","
                   + "\"DeployRequest\":{\"Queue\":\"pool\"},\"JobType\":\"FLINK_STREAMING_SQL\","
                   + "\"EngineVersion\":\""
-                  + ENGINE
+                  + engine
                   + "\",\"SqlText\":\"SELECT 1\"}");
       publication.add("Conf", VolcengineExecutable.settings(step));
       command.setProviderVersion(VolcengineExecutable.revision(publication));
@@ -352,7 +383,7 @@ class VolcengineDispatchTest {
               "directory",
               "pool",
               "test-pool",
-              ENGINE,
+              engine,
               true,
               true,
               false,
@@ -393,7 +424,7 @@ class VolcengineDispatchTest {
         case "GetGWSApplicationDraft":
           return object(
               "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\",\"JobType\":\"FLINK_STREAMING_SQL\",\"EngineVersion\":\""
-                  + ENGINE
+                  + engine
                   + "\"}");
         case "GetGWSStartMethod":
           return latestAvailable

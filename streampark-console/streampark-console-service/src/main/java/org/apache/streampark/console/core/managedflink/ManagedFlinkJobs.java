@@ -101,7 +101,10 @@ public class ManagedFlinkJobs {
         specArtifactId(input.getSpec()) == null && input.getSpec().getDependencyIds().isEmpty(),
         HttpStatus.BAD_REQUEST,
         "Create the job before attaching an artifact");
+    String engine = catalog.target(env).getEngineRef();
     if ("volcengine".equals(text(conn, "provider"))) {
+      String issue = VolcengineManagedFlinkProvider.jobTypeIssue(input.getSpec(), engine);
+      check(issue == null, HttpStatus.UNPROCESSABLE_ENTITY, issue);
       check(
           name.matches("[a-zA-Z0-9](?:[a-zA-Z0-9_.-]{0,46}[a-zA-Z0-9])?"),
           HttpStatus.BAD_REQUEST,
@@ -133,7 +136,7 @@ public class ManagedFlinkJobs {
             app.getId(),
             team,
             env.get("id"),
-            catalog.target(env).getEngineRef(),
+            engine,
             store.encode(input.getSpec()),
             catalog.scope(conn, env));
     return app.getId();

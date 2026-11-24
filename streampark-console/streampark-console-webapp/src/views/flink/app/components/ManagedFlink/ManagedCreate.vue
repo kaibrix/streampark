@@ -28,7 +28,7 @@
     Select,
     Space,
   } from 'ant-design-vue';
-  import { onMounted, reactive, ref, watch } from 'vue';
+  import { computed, onMounted, reactive, ref, watch } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { useRouter } from 'vue-router';
   import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
@@ -76,6 +76,14 @@
     batchMode: false,
     sql: '',
   });
+  const isVolcengine = computed(() =>
+    environments.value.some((env) => env.id === job.environmentId && env.provider === 'volcengine'),
+  );
+  const invalidVolcengineName = computed(
+    () =>
+      isVolcengine.value &&
+      !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,46}[A-Za-z0-9])?$/.test(job.name.trim()),
+  );
   const connection = reactive({
     name: '',
     provider: 'volcengine',
@@ -174,12 +182,13 @@
   }
 
   function create() {
+    if (invalidVolcengineName.value) return;
     void run(async () => {
       const spec: Spec = { type: job.type, args: [], configuration: {} };
       if (job.batchMode) spec.batchMode = true;
       if (job.type === 'SQL') spec.sql = job.sql;
       const appId = await managedPost<string>('/apps', {
-        name: job.name,
+        name: job.name.trim(),
         environmentId: job.environmentId,
         spec,
       });
@@ -194,7 +203,14 @@
     <Card v-else :title="t('managedFlink.create')">
       <Alert v-if="message" class="mb-4" :message="message" show-icon />
       <Form :model="job" layout="vertical" @finish="create">
-        <FormItem :label="t('managedFlink.name')" required>
+        <FormItem
+          :label="t('managedFlink.name')"
+          :validate-status="job.name && invalidVolcengineName ? 'error' : undefined"
+          :help="
+            job.name && invalidVolcengineName ? t('managedFlink.volcengineJobNameRule') : undefined
+          "
+          required
+        >
           <Input v-model:value="job.name" />
         </FormItem>
         <FormItem :label="t('managedFlink.environment')" required>
@@ -230,7 +246,7 @@
             type="primary"
             html-type="submit"
             :loading="busy"
-            :disabled="!job.name || !job.environmentId"
+            :disabled="!job.name.trim() || !job.environmentId || invalidVolcengineName"
           >
             {{ t('managedFlink.save') }}
           </Button>
@@ -242,11 +258,7 @@
             {{ t('managedFlink.probe') }}
           </Button>
           <Button
-            v-if="
-              environments.some(
-                (env) => env.id === job.environmentId && env.provider === 'volcengine',
-              )
-            "
+            v-if="isVolcengine"
             v-auth="'team:update'"
             :disabled="busy"
             @click="listCloudJobs()"

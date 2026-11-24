@@ -42,6 +42,8 @@ export default {
   title: '托管 Flink',
   create: '新建托管 Flink 作业',
   failed: '托管 Flink 请求失败',
+  volcengineJobNameRule:
+    '作业名限 1–48 个字符，首尾须为英文字母或数字，中间还可使用点、下划线和连字符。',
   name: '名称',
   environment: '托管环境',
   type: '作业类型',
