@@ -474,10 +474,10 @@
       />
       <Tabs>
         <TabPane key="draft" :tab="t('managedFlink.draft')">
-          <Form layout="vertical" :disabled="busy">
+          <Form layout="vertical">
             <FormItem v-if="spec.type === 'SQL'" label="SQL">
-              <Textarea v-model:value="spec.sql" :rows="10" />
-              <Button size="small" :disabled="!spec.sql" @click="formatSql">
+              <Textarea :disabled="busy" v-model:value="spec.sql" :rows="10" />
+              <Button size="small" :disabled="busy || !spec.sql" @click="formatSql">
                 {{ t('flink.app.flinkSql.format') }}
               </Button>
             </FormItem>
@@ -509,11 +509,20 @@
             <FormItem :label="t('managedFlink.importBuild')" v-auth="'project:view'">
               <Space wrap>
                 <Input
+                  :disabled="busy"
                   v-model:value="buildSource.projectId"
                   :placeholder="t('managedFlink.projectId')"
                 />
-                <Input v-model:value="buildSource.module" :placeholder="t('managedFlink.module')" />
-                <Input v-model:value="buildSource.jar" placeholder="application.jar" />
+                <Input
+                  :disabled="busy"
+                  v-model:value="buildSource.module"
+                  :placeholder="t('managedFlink.module')"
+                />
+                <Input
+                  :disabled="busy"
+                  v-model:value="buildSource.jar"
+                  placeholder="application.jar"
+                />
                 <Button
                   :disabled="
                     busy || !buildSource.projectId || !buildSource.module || !buildSource.jar
@@ -525,15 +534,16 @@
             </FormItem>
             <template v-if="spec.type === 'JAR'">
               <FormItem :label="t('managedFlink.mainClass')"
-                ><Input v-model:value="spec.mainClass"
+                ><Input :disabled="busy" v-model:value="spec.mainClass"
               /></FormItem>
               <FormItem :label="t('managedFlink.args')"
-                ><Textarea v-model:value="argText" :rows="4"
+                ><Textarea :disabled="busy" v-model:value="argText" :rows="4"
               /></FormItem>
             </template>
             <template v-if="environment?.provider === 'volcengine'">
               <FormItem :label="t('managedFlink.priority')">
                 <InputNumber
+                  :disabled="busy"
                   v-model:value="spec.priority"
                   :min="0"
                   :precision="0"
@@ -542,6 +552,7 @@
               </FormItem>
               <FormItem :label="t('managedFlink.schedulePolicy')">
                 <Select
+                  :disabled="busy"
                   :value="spec.schedulePolicy || (spec.batchMode ? 'DRF' : 'GANG')"
                   :options="
                     (spec.batchMode ? ['DRF'] : ['GANG', 'DRF']).map((value) => ({ value }))
@@ -554,6 +565,7 @@
                 :label="t('managedFlink.scheduleTimeout')"
               >
                 <InputNumber
+                  :disabled="busy"
                   v-model:value="spec.scheduleTimeout"
                   :min="0"
                   :precision="0"
@@ -563,6 +575,7 @@
             </template>
             <FormItem :label="t('managedFlink.configuration')">
               <Textarea
+                :disabled="busy"
                 v-model:value="configurationText"
                 :rows="4"
                 :placeholder="

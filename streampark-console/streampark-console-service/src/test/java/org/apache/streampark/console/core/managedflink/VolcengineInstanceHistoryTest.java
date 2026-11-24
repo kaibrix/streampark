@@ -148,6 +148,14 @@ class VolcengineInstanceHistoryTest {
   }
 
   @Test
+  void rejectsAReadWhenTheCredentialBelongsToAnotherAccount() {
+    Fixture fixture = new Fixture(page -> history(1, 0, 0, 0));
+    Context other = new Context("cn-beijing", "other-account", fixture.context.getTarget(), null);
+    assertThat(fixture.provider.inspect(other, "31").getStatus()).isEqualTo(ReadStatus.AUTH_ERROR);
+    assertThat(fixture.requestedPages).isEmpty();
+  }
+
+  @Test
   void propagatesThrottlingAuthorizationAndRetryAfterThroughEveryRead() {
     long now = System.currentTimeMillis();
     Fixture throttled =

@@ -56,3 +56,18 @@ operations awaiting verification. The Volcengine adapter probes the bound
 account, project, directory and resource pool. Its deployment profile controls
 SQL and JAR submission, snapshots, metrics and log access. Check the environment
 capabilities in the Console before using each operation.
+
+Use one writer for each managed cloud job. Coordinate cloud-console edits with
+StreamPark operations. The public deploy call addresses a draft by ID. Native
+restart and savepoint creation address a job by ID. An external change between
+the preflight read and the write can change which revision or instance receives
+the operation.
+
+If a write loses its response, retain the StreamPark operation ID and use
+**Refresh evidence** on that operation. Confirmation requires a matching
+provider receipt or unambiguous cloud evidence. An ambiguous write stays in
+`VERIFY_REQUIRED` to prevent duplicate dispatch. Capture the cloud job and
+instance history when investigating it.
+
+Grant `app:log` to team members authorized to read text emitted by the job.
+The application controls that text and should keep credentials out of its logs.
