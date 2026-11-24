@@ -48,6 +48,7 @@
     type Snapshot,
   } from '/@/api/flink/managedFlink';
   import { buildUUID } from '/@/utils/uuid';
+  import { format } from '../../FlinkSqlFormatter';
 
   const FormItem = Form.Item;
   const ListItem = List.Item;
@@ -233,6 +234,10 @@
     } finally {
       busy.value = false;
     }
+  }
+
+  function formatSql() {
+    if (spec.value?.sql) spec.value.sql = format(spec.value.sql);
   }
 
   function changeSchedule(policy: Spec['schedulePolicy']) {
@@ -441,6 +446,9 @@
           <Form layout="vertical">
             <FormItem v-if="spec.type === 'SQL'" label="SQL">
               <Textarea v-model:value="spec.sql" :rows="10" />
+              <Button size="small" :disabled="!spec.sql" @click="formatSql">
+                {{ t('flink.app.flinkSql.format') }}
+              </Button>
             </FormItem>
             <FormItem :label="spec.type === 'SQL' ? 'UDF JAR' : 'JAR'">
               <input type="file" accept=".jar" :disabled="busy" @change="upload" />

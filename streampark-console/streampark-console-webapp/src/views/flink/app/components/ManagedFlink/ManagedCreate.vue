@@ -32,6 +32,7 @@
   import { useI18n } from '/@/hooks/web/useI18n';
   import { useRouter } from 'vue-router';
   import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
+  import { format } from '../../FlinkSqlFormatter';
 
   const CollapsePanel = Collapse.Panel;
   const FormItem = Form.Item;
@@ -211,6 +212,9 @@
         </FormItem>
         <FormItem v-if="job.type === 'SQL'" label="SQL">
           <Textarea v-model:value="job.sql" :rows="8" />
+          <Button size="small" :disabled="!job.sql" @click="job.sql = format(job.sql)">
+            {{ t('flink.app.flinkSql.format') }}
+          </Button>
         </FormItem>
         <Space>
           <Button
