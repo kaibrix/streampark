@@ -78,6 +78,15 @@ class VolcengineInstanceHistoryTest {
   }
 
   @Test
+  void recognizesSucceededBatchRunsAsTerminalEvenWithOtherCompletedInstances() {
+    JsonObject page = history(1, 2, 101, 2, "SUCCEEDED");
+    page.getAsJsonArray("Records").get(1).getAsJsonObject().addProperty("State", "SUCCEEDED");
+    assertThat(new Fixture(i -> page).inspect())
+        .extracting(CloudState::getStatus, CloudState::getInstanceId, CloudState::getRunState)
+        .containsExactly(ReadStatus.FOUND, "101", "FINISHED");
+  }
+
+  @Test
   void leavesRepeatedTruncatedAndForeignPagesStale() {
     JsonObject foreign = history(2, 51, 151, 1);
     foreign.getAsJsonArray("Records").get(0).getAsJsonObject().addProperty("ProjectId", "other");

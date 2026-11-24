@@ -273,7 +273,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       }
       List<JsonObject> live =
           runs.stream()
-              .filter(run -> !TERMINAL.contains(text(run, "State")))
+              .filter(run -> !TERMINAL.contains(runState(run)))
               .collect(Collectors.toList());
       if (live.size() > 1) {
         return readFailure(jobId, ReadStatus.STALE);
@@ -288,7 +288,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           revision(application),
           current == null ? null : text(current, "Id"),
           current == null ? null : text(current, "ApplicationId"),
-          current == null ? null : text(current, "State"),
+          current == null ? null : runState(current),
           current == null ? 0 : startedAt(current));
     } catch (ReadFailure failure) {
       return new CloudState(
@@ -797,7 +797,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           if (instance == null
               || !VolcengineExecutable.matches(instance, step, false)
               || !Objects.equals(revision(instance), step.getCommand().getProviderVersion())
-              || !Arrays.asList("RUNNING", "FINISHED", "FAILED").contains(text(instance, "State"))
+              || !Arrays.asList("RUNNING", "FINISHED", "FAILED").contains(runState(instance))
               || text(instance, "VersionId") == null
               || !matchesRestore(api, step, instance)) {
             return awaiting();
@@ -807,7 +807,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           observation.setRuntimeId(text(instance, "ApplicationId"));
           observation.setVersion(step.getCommand().getProviderVersion());
           observation.setRemoteVersionId(text(instance, "VersionId"));
-          observation.setRunState(text(instance, "State"));
+          observation.setRunState(runState(instance));
           observation.setRestoredFrom(step.getCommand().getRestoreRef());
           return observation;
         case SNAPSHOT:
@@ -1359,6 +1359,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private boolean scoped(JsonObject record, Target target, String id) {
     return same(record, "Id", id) && same(record, "ProjectId", target.getProjectId());
+  }
+
+  private String runState(JsonObject instance) {
+    String state = text(instance, "State");
+    return "SUCCEEDED".equals(state) ? "FINISHED" : state;
   }
 
   private boolean isInstance(JsonObject row, Target target, String job) {
