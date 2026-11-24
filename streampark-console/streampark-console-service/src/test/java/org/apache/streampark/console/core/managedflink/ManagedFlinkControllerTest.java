@@ -26,6 +26,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQue
 import org.apache.streampark.console.system.entity.Member;
 import org.apache.streampark.console.system.entity.User;
 
+import com.google.common.collect.ImmutableSet;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -34,7 +35,6 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Collections;
-import java.util.Set;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -105,9 +105,9 @@ class ManagedFlinkControllerTest {
     when(fixture.login.getLoginUser()).thenReturn(viewer);
     when(fixture.members.findByUserId(100000L, 100001L)).thenReturn(new Member());
     when(fixture.members.findByUserId(200000L, 100001L)).thenReturn(new Member());
-    when(fixture.users.getPermissions(100001L, 100000L)).thenReturn(Set.of("app:detail"));
+    when(fixture.users.getPermissions(100001L, 100000L)).thenReturn(ImmutableSet.of("app:detail"));
     when(fixture.users.getPermissions(100001L, 200000L))
-        .thenReturn(Set.of("app:detail", "app:log"));
+        .thenReturn(ImmutableSet.of("app:detail", "app:log"));
     MockMvc http =
         MockMvcBuilders.standaloneSetup(
                 new ManagedFlinkController(
@@ -122,7 +122,7 @@ class ManagedFlinkControllerTest {
     http.perform(get(runs + "known-run/logs").param("teamId", "200000"))
         .andExpect(status().isNotFound());
     when(fixture.users.getPermissions(100001L, 100000L))
-        .thenReturn(Set.of("app:detail", "app:log"));
+        .thenReturn(ImmutableSet.of("app:detail", "app:log"));
     http.perform(get(runs + "provider-run/logs").param("teamId", "100000"))
         .andExpect(status().isNotFound());
     verify(provider, never()).logs(any(), any(), any(), any());

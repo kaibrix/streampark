@@ -41,6 +41,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.function.IntFunction;
 
@@ -93,7 +94,7 @@ class VolcengineInstanceHistoryTest {
     JsonObject wrongSize = history(2, 51, 151, 1);
     wrongSize.addProperty("Size", 1);
     for (JsonObject invalid :
-        List.of(
+        Arrays.asList(
             history(2, 51, 150, 1),
             history(2, 51, 151, 0),
             history(2, 52, 151, 1),
@@ -194,7 +195,8 @@ class VolcengineInstanceHistoryTest {
     long now = 2_139_722_880_000L;
     assertThat(VolcengineOpenApi.retryNotBefore(" 20 ", now)).isEqualTo(now + 20_000);
     for (String value :
-        List.of("", "0", "-1", "3.5", "9223372036854775807", "Wed, 21 Oct 2015 07:28:00 GMT")) {
+        Arrays.asList(
+            "", "0", "-1", "3.5", "9223372036854775807", "Wed, 21 Oct 2015 07:28:00 GMT")) {
       assertThat(VolcengineOpenApi.retryNotBefore(value, now)).isZero();
     }
   }

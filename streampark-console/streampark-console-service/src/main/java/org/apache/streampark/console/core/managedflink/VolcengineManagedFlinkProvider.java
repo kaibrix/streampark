@@ -31,6 +31,8 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.ReadFailure;
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
+import org.apache.commons.lang3.StringUtils;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -1389,7 +1391,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                 .allMatch(
                     row ->
                         isInstance(row, target, job)
-                            && !text(row, "Id").isBlank()
+                            && StringUtils.isNotBlank(text(row, "Id"))
                             && ids.add(text(row, "Id")))
         ? result
         : null;

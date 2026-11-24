@@ -19,6 +19,8 @@ package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
+import org.apache.commons.lang3.StringUtils;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -185,7 +187,7 @@ final class VolcengineMonitor {
   }
 
   static Long time(String value) {
-    return value == null || value.isBlank() ? null : TimeUnit.SECONDS.toMillis(epoch(value));
+    return StringUtils.isBlank(value) ? null : TimeUnit.SECONDS.toMillis(epoch(value));
   }
 
   static Window window(long start, Long end, Long lower, Long upper, long now) {

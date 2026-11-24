@@ -52,6 +52,7 @@ successful project build in the same team. Save the draft after attaching it.
 
 Mock provider observations live in memory. The operation and release records
 persist across Console restarts. A lost mock observation leaves dispatched
-operations awaiting verification. The Volcengine adapter probes resource-pool
-and project job reads. Cloud mutations and cloud diagnostics remain gated as
-`UNVERIFIED` pending the corresponding contract and end-to-end evidence.
+operations awaiting verification. The Volcengine adapter probes the bound
+account, project, directory and resource pool. Its deployment profile controls
+SQL and JAR submission, snapshots, metrics and log access. Check the environment
+capabilities in the Console before using each operation.

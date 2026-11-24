@@ -49,8 +49,8 @@ import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -617,7 +617,7 @@ class ManagedFlinkLifecycleTest {
     assertThat(confirmed).containsEntry("cloudBound", true).containsEntry("syncStatus", "FRESH");
     assertThat(((Number) confirmed.get("observedAt")).longValue()).isPositive();
 
-    for (String status : List.of("STALE", "DRIFTED", "MISSING", "AUTH_ERROR")) {
+    for (String status : Arrays.asList("STALE", "DRIFTED", "MISSING", "AUTH_ERROR")) {
       test.sql.update("update t_flink_managed_job set sync_status=?", status);
       assertThat(test.jobs.detail(100000L, 900401L))
           .containsEntry("cloudBound", true)

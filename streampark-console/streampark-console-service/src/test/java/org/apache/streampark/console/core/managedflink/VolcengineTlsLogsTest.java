@@ -22,6 +22,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQue
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.squareup.okhttp.HttpUrl;
@@ -33,7 +34,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -141,8 +142,8 @@ class VolcengineTlsLogsTest {
         .containsEntry("requestIdSuffix", "123456")
         .containsEntry(
             "rows",
-            List.of(
-                Map.of(
+            Arrays.asList(
+                ImmutableMap.of(
                     "timestamp",
                     rowTime,
                     "component",
@@ -152,7 +153,7 @@ class VolcengineTlsLogsTest {
     String cursor = (String) page.get("nextCursor");
     assertThat(cursor).isNotBlank().isNotEqualTo("vendor-cursor");
     for (LogQuery wrong :
-        List.of(
+        Arrays.asList(
             new LogQuery(5, null, null, null, null, "request-42", cursor),
             new LogQuery(4, null, null, null, null, "another-filter", cursor))) {
       assertThatThrownBy(() -> logs.read(api, context, "job1", run, wrong))
@@ -206,7 +207,7 @@ class VolcengineTlsLogsTest {
   @Test
   void redactsCredentialsSignedLinksAndExecutableInputFromMessages() {
     for (String line :
-        List.of(
+        Arrays.asList(
             "Authorization: HMAC-SHA256 value",
             "{\"session_token\": \"example\"}",
             "AK=example SK=value",
@@ -251,8 +252,8 @@ class VolcengineTlsLogsTest {
     assertThat(logs.read(api, context, "job1", run, filter))
         .containsEntry(
             "rows",
-            List.of(
-                Map.of(
+            Arrays.asList(
+                ImmutableMap.of(
                     "timestamp",
                     timestamp,
                     "component",

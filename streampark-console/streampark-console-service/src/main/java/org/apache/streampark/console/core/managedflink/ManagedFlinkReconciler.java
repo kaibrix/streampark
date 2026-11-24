@@ -21,6 +21,8 @@ import org.apache.streampark.console.core.enums.FlinkAppState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
 
+import org.apache.commons.lang3.StringUtils;
+
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -124,7 +126,7 @@ class ManagedFlinkReconciler {
     if (!Objects.equals(state.getJobId(), text(job, "provider_job_id"))) {
       return;
     }
-    boolean hasInstance = state.getInstanceId() != null && !state.getInstanceId().isBlank();
+    boolean hasInstance = StringUtils.isNotBlank(state.getInstanceId());
     if (!hasInstance && job.get("current_run_id") != null) {
       Map<String, Object> current =
           store.find(
@@ -273,12 +275,12 @@ class ManagedFlinkReconciler {
     long started = cloudStart > 0 && cloudStart <= now ? cloudStart : now;
     String run = row == null ? id() : text(row, "id");
     String runtimeId = state.getRuntimeId();
-    if (runtimeId != null && runtimeId.isBlank()) {
+    if (StringUtils.isBlank(runtimeId)) {
       runtimeId = null;
     }
     if (row != null && runtimeId != null) {
       String recorded = text(row, "runtime_application_id");
-      if (recorded == null || recorded.isBlank()) {
+      if (StringUtils.isBlank(recorded)) {
         store
             .jdbc()
             .update(

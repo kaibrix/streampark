@@ -17,6 +17,7 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -34,7 +35,6 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,8 +103,8 @@ class VolcengineMonitorTest {
 
     assertThat(VolcengineMonitor.points(data, METRIC, "fixture", 200, 250))
         .containsExactly(
-            Map.of("timestamp", 200L, "value", new BigDecimal("3")),
-            Map.of("timestamp", 250L, "value", new BigDecimal("4")));
+            ImmutableMap.of("timestamp", 200L, "value", new BigDecimal("3")),
+            ImmutableMap.of("timestamp", 250L, "value", new BigDecimal("4")));
     assertThat(VolcengineMonitor.points(data, "wrong_metric", "fixture", 200, 250)).isEmpty();
   }
 

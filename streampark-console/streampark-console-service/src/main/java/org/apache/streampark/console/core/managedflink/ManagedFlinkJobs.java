@@ -39,6 +39,8 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
 import org.apache.streampark.console.core.service.ApplicationService;
 
+import org.apache.commons.lang3.StringUtils;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -865,8 +867,7 @@ public class ManagedFlinkJobs {
             && dependencies.stream()
                 .allMatch(
                     id ->
-                        id != null
-                            && !id.isBlank()
+                        StringUtils.isNotBlank(id)
                             && id.length() <= 36
                             && !id.equals(specArtifactId(spec)))
             && dependencies.stream().distinct().count() == dependencies.size(),
