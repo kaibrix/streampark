@@ -40,8 +40,6 @@
     uploadManagedJar,
     type Job,
     type Spec,
-    type Environment,
-    type Capabilities,
     type Operation,
     type Release,
     type Run,
@@ -67,8 +65,8 @@
   const editingRevision = ref<string>();
   const savedSpec = ref('');
   const savedConfigurationText = ref('');
-  const environment = ref<Environment>();
-  const capabilities = ref<Capabilities>({});
+  const capabilities = computed(() => job.value?.capabilities || {});
+  const runtimeCapabilities = computed(() => job.value?.runtimeCapabilities || {});
   const cloud = ref<{
     status: string;
     jobId?: string;
@@ -165,11 +163,12 @@
         configurationText.value !== savedConfigurationText.value),
   );
   const can = (key: string) => capabilities.value[key] === 'AVAILABLE';
+  const canRun = (key: string) => runtimeCapabilities.value[key] === 'AVAILABLE';
   const showVolcengineLogConsole = computed(
     () =>
-      environment.value?.provider === 'volcengine' &&
+      job.value?.provider === 'volcengine' &&
       hasPermission('app:log') &&
-      (!can('LOG_SEARCH') ||
+      (!canRun('LOG_SEARCH') ||
         ['NEEDS_CONFIGURATION', 'NO_ACCESS', 'EXPIRED', 'STALE'].includes(
           logs.value?.status || '',
         )),
@@ -208,11 +207,6 @@
     runs.value = allRuns;
     snapshots.value = points;
     operations.value = ops;
-    const envPath = '/environments/' + info.environmentId;
-    [environment.value, capabilities.value] = await Promise.all([
-      managedGet<Environment>(envPath),
-      managedGet<Capabilities>(envPath + '/capabilities'),
-    ]);
     if (initial || !spec.value) {
       spec.value = info.spec;
       argText.value = info.spec.args.join('\n');
@@ -372,7 +366,7 @@
     command(name, {
       draftRevision: editingRevision.value,
       expectedReleaseId: job.value?.activeReleaseId,
-      expectedEnvVersion: environment.value?.configVersion,
+      expectedEnvVersion: job.value?.configVersion,
       restore: name === 'submit' ? { mode: 'FROM_NEW', confirmedNew: true } : undefined,
       sourceReleaseId: name === 'rollback' ? sourceReleaseId.value : undefined,
     });
@@ -456,7 +450,7 @@
     <Alert v-if="feedback" class="mb-4" :message="feedback" show-icon />
     <template v-if="job && spec">
       <Space class="mb-4" wrap>
-        <Tag>{{ environment?.name }}</Tag>
+        <Tag>{{ job.environmentName }}</Tag>
         <Tag>{{ job.engineRef }}</Tag>
         <Tag>{{ t(spec.batchMode ? 'managedFlink.batch' : 'managedFlink.streaming') }}</Tag>
         <Tag>{{ job.syncStatus }}</Tag>
@@ -541,7 +535,7 @@
                 ><Textarea :disabled="busy" v-model:value="argText" :rows="4"
               /></FormItem>
             </template>
-            <template v-if="environment?.provider === 'volcengine'">
+            <template v-if="job.provider === 'volcengine'">
               <FormItem :label="t('managedFlink.priority')">
                 <InputNumber
                   :disabled="busy"
@@ -594,7 +588,7 @@
                 t('managedFlink.validate')
               }}</Button>
               <Button
-                v-if="environment?.provider === 'volcengine' && spec.type === 'SQL'"
+                v-if="job.provider === 'volcengine' && spec.type === 'SQL'"
                 v-auth="'app:update'"
                 :disabled="busy || !spec.sql"
                 @click="validateCloudSql"
@@ -650,22 +644,22 @@
                 {
                   value: 'FROM_LATEST',
                   label: t('managedFlink.latest'),
-                  disabled: !can('RESTORE_FROM_LATEST'),
+                  disabled: !canRun('RESTORE_FROM_LATEST'),
                 },
                 {
                   value: 'FROM_CLOUD_LATEST',
                   label: t('managedFlink.cloudLatest'),
-                  disabled: !can('RESTORE_FROM_CLOUD_LATEST'),
+                  disabled: !canRun('RESTORE_FROM_CLOUD_LATEST'),
                 },
                 {
                   value: 'FROM_CLOUD_SNAPSHOT',
                   label: t('managedFlink.cloudSnapshot'),
-                  disabled: !can('RESTORE_FROM_CLOUD_SNAPSHOT'),
+                  disabled: !canRun('RESTORE_FROM_CLOUD_SNAPSHOT'),
                 },
                 {
                   value: 'FROM_SNAPSHOT',
                   label: t('managedFlink.snapshot'),
-                  disabled: !can('RESTORE_FROM_SNAPSHOT'),
+                  disabled: !canRun('RESTORE_FROM_SNAPSHOT'),
                 },
               ]"
             />
@@ -684,7 +678,7 @@
               />
             </template>
             <Checkbox
-              v-if="can('SUBMIT_INSTANCE') && !job.directSubmission"
+              v-if="canRun('SUBMIT_INSTANCE') && !job.directSubmission"
               v-model:checked="submitInstance"
               >{{ t('managedFlink.submitInstance') }}</Checkbox
             >
@@ -699,7 +693,7 @@
             />
             <Button
               v-auth="'app:start'"
-              :disabled="lock || running || !job.activeReleaseId || !can('START')"
+              :disabled="lock || running || !job.activeReleaseId || !canRun('START')"
               @click="
                 command('start', {
                   expectedReleaseId: job?.activeReleaseId,
@@ -741,7 +735,7 @@
                 })
               "
             >
-              <Button :disabled="lock || !can('START') || !can('STOP')">{{
+              <Button :disabled="lock || !canRun('START') || !canRun('STOP')">{{
                 t('managedFlink.restart')
               }}</Button>
             </Popconfirm>
@@ -751,7 +745,7 @@
               :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'IMMEDIATE' })"
             >
-              <Button v-auth="'app:cancel'" :disabled="lock || !running || !can('STOP')">{{
+              <Button v-auth="'app:cancel'" :disabled="lock || !running || !canRun('STOP')">{{
                 t('managedFlink.stop')
               }}</Button>
             </Popconfirm>
@@ -763,13 +757,13 @@
             >
               <Button
                 v-auth="'app:cancel'"
-                :disabled="lock || !running || !can('SNAPSHOT_THEN_STOP')"
+                :disabled="lock || !running || !canRun('SNAPSHOT_THEN_STOP')"
                 >{{ t('managedFlink.snapshotStop') }}</Button
               >
             </Popconfirm>
             <Button
               v-auth="'savepoint:trigger'"
-              :disabled="lock || !running || !can('SNAPSHOT')"
+              :disabled="lock || !running || !canRun('SNAPSHOT')"
               @click="command('snapshots', { expectedRunId: run?.id })"
               >{{ t('managedFlink.snapshot') }}</Button
             >
@@ -833,11 +827,7 @@
             </template>
           </List>
         </TabPane>
-        <TabPane
-          v-if="environment?.provider === 'volcengine'"
-          key="cloud"
-          :tab="t('managedFlink.cloudJob')"
-        >
+        <TabPane v-if="job.provider === 'volcengine'" key="cloud" :tab="t('managedFlink.cloudJob')">
           <Button :loading="busy" :disabled="!job.cloudBound" @click="readCloud()">{{
             t('managedFlink.readCloud')
           }}</Button>
@@ -892,7 +882,8 @@
         <TabPane key="diagnostics" :tab="t('managedFlink.diagnostics')">
           <Space
             v-if="
-              runs.length && (can('METRICS') || (can('LOG_SEARCH') && hasPermission('app:log')))
+              runs.length &&
+              (canRun('METRICS') || (canRun('LOG_SEARCH') && hasPermission('app:log')))
             "
             class="mb-4"
             wrap
@@ -936,7 +927,7 @@
             </label>
           </Space>
           <p>
-            {{ t('managedFlink.logs') }} · {{ capabilities.LOG_SEARCH || 'UNVERIFIED' }}
+            {{ t('managedFlink.logs') }} · {{ runtimeCapabilities.LOG_SEARCH || 'UNVERIFIED' }}
             <a
               v-if="showVolcengineLogConsole"
               class="ml-2"
@@ -946,7 +937,7 @@
               >{{ t('managedFlink.openVolcengineConsole') }}</a
             >
           </p>
-          <div v-if="can('LOG_SEARCH') && runs.length && hasPermission('app:log')" class="mb-6">
+          <div v-if="canRun('LOG_SEARCH') && runs.length && hasPermission('app:log')" class="mb-6">
             <Space wrap>
               <Input
                 v-model:value="logFilters.component"
@@ -957,7 +948,7 @@
                 @input="logs = undefined"
               />
               <Input
-                v-if="can('LOG_LEVEL_FILTER')"
+                v-if="canRun('LOG_LEVEL_FILTER')"
                 v-model:value="logFilters.level"
                 :aria-label="t('managedFlink.logLevel')"
                 :placeholder="t('managedFlink.logLevel')"
@@ -1002,8 +993,8 @@
               </Button>
             </div>
           </div>
-          <p>{{ t('managedFlink.metrics') }} · {{ capabilities.METRICS || 'UNVERIFIED' }}</p>
-          <template v-if="can('METRICS') && runs.length">
+          <p>{{ t('managedFlink.metrics') }} · {{ runtimeCapabilities.METRICS || 'UNVERIFIED' }}</p>
+          <template v-if="canRun('METRICS') && runs.length">
             <Button
               :loading="busy"
               :disabled="!(diagnosticRun || job.currentRunId)"

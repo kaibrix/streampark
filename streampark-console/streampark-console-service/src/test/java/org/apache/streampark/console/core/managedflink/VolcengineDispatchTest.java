@@ -78,6 +78,22 @@ class VolcengineDispatchTest {
   }
 
   @Test
+  void definitiveCloudDenialEndsDraftCreationButServerFailureStillNeedsReadback() {
+    Fixture fixture = new Fixture(null);
+    OperationStep create =
+        new OperationStep(
+            "create", 2L, Action.CREATE_DRAFT, fixture.step.getCommand(), null, null, null);
+    fixture.draftStatus = 403;
+    Observation denied = fixture.provider.dispatch(fixture.context, create, () -> true);
+    assertThat(denied)
+        .extracting(Observation::getOutcome, Observation::getCode, Observation::getRequestId)
+        .containsExactly(Outcome.REJECTED, "CLOUD_AUTHORIZATION_REJECTED", "fixture-request");
+    fixture.draftStatus = 503;
+    assertThat(fixture.provider.dispatch(fixture.context, create, () -> true).getOutcome())
+        .isEqualTo(Outcome.UNKNOWN);
+  }
+
+  @Test
   void deniedPermissionAfterAllReadsNeverSendsStart() {
     Fixture fixture = new Fixture(null);
     Observation result =
@@ -237,6 +253,10 @@ class VolcengineDispatchTest {
     Observation confirmed = fixture.provider.observe(fixture.context, direct, ack);
     assertThat(confirmed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
     assertThat(confirmed.getInstanceStartedAt()).isEqualTo(1704067200000L);
+    fixture.instanceState = "STOPPED";
+    assertThat(fixture.provider.observe(fixture.context, direct, ack))
+        .extracting(Observation::getOutcome, Observation::getRunState)
+        .containsExactly(Outcome.CONFIRMED, "STOPPED");
     for (String invalid :
         java.util.Arrays.asList("invalid", "2024-02-30 08:00:00", "+300000000-01-01 00:00:00")) {
       fixture.startTime = invalid;
@@ -325,6 +345,8 @@ class VolcengineDispatchTest {
     private JsonObject prior;
     private String savepointStatus;
     private boolean directInstance;
+    private String instanceState = "SUCCEEDED";
+    private int draftStatus;
     private String startTime = "2024-01-01 08:00:00";
     private boolean latestAvailable = true;
     private JsonObject submitted;
@@ -415,7 +437,12 @@ class VolcengineDispatchTest {
                 metadata.addProperty("RequestId", "fixture-request");
                 JsonObject envelope = new JsonObject();
                 envelope.add("ResponseMetadata", metadata);
-                JsonObject result = response(action);
+                boolean draftDenied =
+                    draftStatus != 0 && "CreateGWSApplicationDraft".equals(action);
+                if (draftDenied) {
+                  metadata.add("Error", object("{\"Code\":\"AccessDenied\"}"));
+                }
+                JsonObject result = draftDenied ? new JsonObject() : response(action);
                 if (prior != null && "GetApplicationInstance".equals(action)) {
                   Buffer body = new Buffer();
                   chain.request().body().writeTo(body);
@@ -427,7 +454,7 @@ class VolcengineDispatchTest {
                 return new Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
-                    .code(200)
+                    .code(draftDenied ? draftStatus : 200)
                     .message("OK")
                     .body(
                         ResponseBody.create(
@@ -491,7 +518,7 @@ class VolcengineDispatchTest {
             instance.addProperty("Id", "4");
             instance.addProperty("JobId", "3");
             // Direct instances have no provider draft VersionId.
-            instance.addProperty("State", "SUCCEEDED");
+            instance.addProperty("State", instanceState);
             instance.addProperty("StartTime", startTime);
             return instance;
           }

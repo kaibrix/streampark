@@ -48,6 +48,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.id;
@@ -66,6 +68,15 @@ class ManagedFlinkWorker {
   private final TransactionTemplate tx;
   private final String owner = id();
   private final ScheduledThreadPoolExecutor renewals;
+  private final ThreadPoolExecutor dispatcher =
+      new ThreadPoolExecutor(
+          0,
+          1,
+          1,
+          TimeUnit.MINUTES,
+          new SynchronousQueue<>(),
+          task -> new Thread(task, "managed-flink-dispatch"),
+          new ThreadPoolExecutor.DiscardPolicy());
 
   ManagedFlinkWorker(
       ManagedFlinkStore store,
@@ -89,11 +100,16 @@ class ManagedFlinkWorker {
 
   @PreDestroy
   void stopRenewals() {
+    dispatcher.shutdownNow();
     renewals.shutdownNow();
   }
 
   @Scheduled(fixedDelayString = "${streampark.managed-flink.worker-delay-ms:1000}")
   void tick() {
+    dispatcher.execute(this::processDue);
+  }
+
+  private void processDue() {
     long now = System.currentTimeMillis();
     List<Map<String, Object>> due =
         store
@@ -105,6 +121,9 @@ class ManagedFlinkWorker {
                 now,
                 now);
     for (Map<String, Object> row : due) {
+      if (dispatcher.isShutdown()) {
+        return;
+      }
       String operation = text(row, "id");
       try {
         advance(operation);
@@ -173,7 +192,17 @@ class ManagedFlinkWorker {
     ManagedFlinkProvider provider = catalog.provider(text(connection, "provider"));
     Context context;
     try {
-      context = catalog.jobContext(connection, env, command.getTarget(), job);
+      // Stop and snapshot commands queued by earlier versions may carry an edited environment.
+      String type = text(op, "command_type");
+      boolean runningRelease = "STOP".equals(type) || "SNAPSHOT".equals(type);
+      context =
+          catalog.jobContext(
+              connection,
+              env,
+              runningRelease && op.get("release_id") != null
+                  ? jobs.releaseTarget(app, text(op, "release_id"))
+                  : command.getTarget(),
+              job);
     } catch (RuntimeException e) {
       tx.executeWithoutResult(
           t -> {
@@ -518,9 +547,10 @@ class ManagedFlinkWorker {
     if ((step.getAction() == Action.START
             || step.getAction() == Action.RESTART
             || step.getAction() == Action.SUBMIT)
-        && "FAILED".equals(evidence.getRunState())) {
+        && ("FAILED".equals(evidence.getRunState()) || "STOPPED".equals(evidence.getRunState()))) {
       if (evidence.getCode() == null) {
-        evidence.setCode("RUNTIME_FAILED");
+        evidence.setCode(
+            "STOPPED".equals(evidence.getRunState()) ? "RUNTIME_STOPPED" : "RUNTIME_FAILED");
       }
       updateAttempt(step, index, evidence, "FAILED");
       finish(op, "FAILED");
@@ -678,7 +708,7 @@ class ManagedFlinkWorker {
     String runState = result.getRunState();
     boolean running = "RUNNING".equals(runState);
     boolean failed = "FAILED".equals(runState);
-    if ((!running && !failed && !"FINISHED".equals(runState))
+    if ((!running && !failed && !"STOPPED".equals(runState) && !"FINISHED".equals(runState))
         || !hasId(result.getInstanceId(), 191)
         || (!failed
             && !Objects.equals(step.getCommand().getRestoreRef(), result.getRestoredFrom()))) {
@@ -732,7 +762,8 @@ class ManagedFlinkWorker {
         .jdbc()
         .update(
             "update t_flink_app set state=?,start_time=?,end_time=? where id=?",
-            FlinkAppState.of(runState).getValue(),
+            ("STOPPED".equals(runState) ? FlinkAppState.CANCELED : FlinkAppState.of(runState))
+                .getValue(),
             new Date(started),
             running ? null : new Date(now),
             app);

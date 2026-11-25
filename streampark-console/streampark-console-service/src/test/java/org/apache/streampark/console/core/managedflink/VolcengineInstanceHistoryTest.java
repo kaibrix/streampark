@@ -88,6 +88,20 @@ class VolcengineInstanceHistoryTest {
   }
 
   @Test
+  void missingOrMalformedDisplayTimePreservesTheIdentifiedCurrentInstance() {
+    for (String state : Arrays.asList("RUNNING", "STOPPED")) {
+      JsonObject page = history(1, 2, 101, 2, state);
+      JsonObject current = page.getAsJsonArray("Records").get(0).getAsJsonObject();
+      for (String invalid : Arrays.asList(null, "invalid", "+300000000-01-01 00:00:00")) {
+        current.addProperty("StartTime", invalid);
+        assertThat(new Fixture(i -> page).inspect())
+            .extracting(CloudState::getStatus, CloudState::getInstanceId, CloudState::getStartedAt)
+            .containsExactly(ReadStatus.FOUND, "101", 0L);
+      }
+    }
+  }
+
+  @Test
   void leavesRepeatedTruncatedAndForeignPagesStale() {
     JsonObject foreign = history(2, 51, 151, 1);
     foreign.getAsJsonArray("Records").get(0).getAsJsonObject().addProperty("ProjectId", "other");

@@ -26,7 +26,6 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Command;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
-import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.DependencyArtifact;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
@@ -195,6 +194,21 @@ public class ManagedFlinkJobs {
         "directSubmission",
         text(job, "provider_job_id") != null && text(job, "provider_draft_id") == null);
     result.put("observedAt", job.get("observed_at"));
+    Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
+    result.put("environmentName", text(env, "name"));
+    result.put("provider", text(conn, "provider"));
+    result.put("configVersion", number(env, "config_version"));
+    Target target = catalog.target(env);
+    Map<String, String> capabilities = catalog.capabilities(env, conn, target);
+    result.put("capabilities", capabilities);
+    Target runtime =
+        job.get("active_release_id") == null
+            ? target
+            : releaseTarget(app, text(job, "active_release_id"));
+    result.put(
+        "runtimeCapabilities",
+        runtime.equals(target) ? capabilities : catalog.capabilities(env, conn, runtime));
     return result;
   }
 
@@ -338,16 +352,12 @@ public class ManagedFlinkJobs {
     Map<String, Object> env = catalog.environment(team, text(job, "environment_id"), true);
     Map<String, Object> conn = catalog.connection(team, text(env, "connection_id"));
     ManagedFlinkProvider provider = catalog.provider(text(conn, "provider"));
-    Target target = catalog.target(env);
-    Context context =
-        new Context(
-            team,
-            text(env, "region"),
-            text(conn, "account_ref"),
-            target,
-            null,
-            text(conn, "credential") == null);
-    Map<String, String> capabilities = provider.capabilities(context);
+    String release = text(job, "active_release_id");
+    boolean publishing =
+        type == CommandType.SUBMIT || type == CommandType.PUBLISH || type == CommandType.ROLLBACK;
+    Target target =
+        publishing || release == null ? catalog.target(env) : releaseTarget(app, release);
+    Map<String, String> capabilities = catalog.baseCapabilities(env, conn, target);
     FrozenCommand frozen = new FrozenCommand();
     frozen.setRequest(cmd);
     frozen.setTarget(target);
@@ -355,9 +365,8 @@ public class ManagedFlinkJobs {
     frozen.setJobName(
         text(store.require("select job_name from t_flink_app where id=?", app), "job_name"));
 
-    String release = text(job, "active_release_id");
     Map<String, Object> current = currentRun(job);
-    if (type == CommandType.SUBMIT || type == CommandType.PUBLISH || type == CommandType.ROLLBACK) {
+    if (publishing) {
       if (type == CommandType.SUBMIT) {
         capability(capabilities, "SUBMIT_INSTANCE");
         check(
@@ -614,7 +623,6 @@ public class ManagedFlinkJobs {
       check(latest != null, HttpStatus.UNPROCESSABLE_ENTITY, "No compatible latest snapshot");
       frozen.setRestoreRef(required(text(latest, "restore_ref"), 191));
     }
-    frozen.setTarget(store.decode(text(version, "target"), Target.class));
     frozen.setSpec(store.decode(text(version, "spec"), Spec.class));
     frozen.setReleaseMarker(release);
     frozen.setArtifactRef(text(version, "artifact_ref"));
@@ -782,6 +790,15 @@ public class ManagedFlinkJobs {
             + (lock ? " for update" : ""),
         app,
         team);
+  }
+
+  Target releaseTarget(long app, String release) {
+    return store.decode(
+        text(
+            store.require(
+                "select target from t_flink_managed_release where app_id=? and id=?", app, release),
+            "target"),
+        Target.class);
   }
 
   Map<String, Object> release(long app, String release) {

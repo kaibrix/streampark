@@ -116,6 +116,14 @@ class ManagedFlinkControllerTest {
                     mock(ManagedFlinkArtifacts.class),
                     fixture.store))
             .build();
+    http.perform(get("/flink/managed/apps/900401").param("teamId", "100000"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.environmentName").value("review"))
+        .andExpect(jsonPath("$.data.capabilities.START").value("AVAILABLE"))
+        .andExpect(jsonPath("$.data.runtimeCapabilities.STOP").value("AVAILABLE"))
+        .andExpect(jsonPath("$.data.credential").doesNotExist());
+    http.perform(get("/flink/managed/environments/env").param("teamId", "100000"))
+        .andExpect(status().isForbidden());
     String runs = "/flink/managed/apps/900401/runs/";
     http.perform(get(runs + "known-run/logs").param("teamId", "100000"))
         .andExpect(status().isForbidden());

@@ -56,7 +56,6 @@ import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -294,10 +293,8 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       if (live.size() > 1) {
         return readFailure(jobId, ReadStatus.STALE);
       }
-      JsonObject current =
-          live.isEmpty()
-              ? runs.stream().max(Comparator.comparingLong(this::startedAt)).orElse(null)
-              : live.get(0);
+      // The provider lists instances in descending start-time order.
+      JsonObject current = live.isEmpty() ? (runs.isEmpty() ? null : runs.get(0)) : live.get(0);
       return new CloudState(
           ReadStatus.FOUND,
           jobId,
@@ -305,7 +302,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           current == null ? null : text(current, "Id"),
           current == null ? null : text(current, "ApplicationId"),
           current == null ? null : runState(current),
-          current == null ? 0 : startedAt(current),
+          current == null ? 0 : displayStartTime(current),
           0,
           runs.stream()
               .filter(run -> TERMINAL.contains(runState(run)))
@@ -887,7 +884,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
               || !VolcengineExecutable.matches(instance, step, false)
               || expectedVersion == null
               || !expectedVersion.equals(revision(instance))
-              || !Arrays.asList("RUNNING", "FINISHED", "FAILED").contains(runState(instance))
+              || !("RUNNING".equals(runState(instance)) || TERMINAL.contains(runState(instance)))
               || (step.getAction() != ManagedFlinkModels.Action.SUBMIT
                   && target.getDirectJobId() == null
                   && text(instance, "VersionId") == null)
@@ -897,13 +894,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           observation.setJobId(submittedJob);
           observation.setInstanceId(acknowledgedInstance);
           observation.setRuntimeId(text(instance, "ApplicationId"));
-          if (text(instance, "StartTime") != null) {
-            try {
-              observation.setInstanceStartedAt(startedAt(instance));
-            } catch (DateTimeParseException | ArithmeticException ignored) {
-              // An optional display timestamp does not affect the instance identity or state.
-            }
-          }
+          observation.setInstanceStartedAt(displayStartTime(instance));
           observation.setVersion(expectedVersion);
           observation.setRemoteVersionId(text(instance, "VersionId"));
           observation.setRunState(runState(instance));
@@ -1690,6 +1681,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
   }
 
+  private long displayStartTime(JsonObject run) {
+    if (text(run, "StartTime") == null) {
+      return 0;
+    }
+    try {
+      return startedAt(run);
+    } catch (DateTimeParseException | ArithmeticException ignored) {
+      return 0;
+    }
+  }
+
   private long startedAt(JsonObject run) {
     return LocalDateTime.parse(text(run, "StartTime"), CLOUD_TIME)
         .atZone(ZoneId.of("Asia/Shanghai"))
@@ -1702,6 +1704,15 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   private Observation ack(Reply reply, String draftField, String jobField) {
+    // A structured authorization rejection is definitive. A transport or server failure
+    // may arrive after the write and still requires readback.
+    if ((reply.httpStatus == 401 || reply.httpStatus == 403)
+        && StringUtils.isNotBlank(reply.errorCode)
+        && StringUtils.isNotBlank(reply.requestId)) {
+      Observation denied = rejected("CLOUD_AUTHORIZATION_REJECTED");
+      denied.setRequestId(reply.requestId);
+      return denied;
+    }
     if (!reply.ok() || "false".equals(text(reply.data(), "Success"))) {
       Observation unknown = Observation.outcome(Outcome.UNKNOWN, "VOLCENGINE_WRITE_UNCERTAIN");
       unknown.setRequestId(reply.requestId);

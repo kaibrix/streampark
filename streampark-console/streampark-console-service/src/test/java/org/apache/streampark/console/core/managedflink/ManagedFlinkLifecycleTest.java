@@ -126,6 +126,80 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void schedulerReturnsWhileTheCloudWriteIsStillBlocked() throws Exception {
+    RecordingProvider provider = new RecordingProvider(true, true);
+    Fixture test = new Fixture(provider);
+    String operation = test.publish("async", test.command());
+    test.reachPublish(operation);
+    ExecutorService scheduler = Executors.newSingleThreadExecutor();
+    try {
+      Future<?> tick = scheduler.submit(test.first::tick);
+      assertThat(provider.applied.await(10, TimeUnit.SECONDS)).isTrue();
+      tick.get(2, TimeUnit.SECONDS);
+      scheduler.submit(test.first::tick).get(2, TimeUnit.SECONDS);
+      assertThat(provider.publishes).hasValue(1);
+    } finally {
+      provider.allowAck.countDown();
+      scheduler.shutdownNow();
+      test.first.stopRenewals();
+    }
+  }
+
+  @Test
+  void runningReleaseKeepsItsPoolAndCapabilitiesAfterEnvironmentEdit() {
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Map<String, String> capabilities(Context context) {
+            Map<String, String> result = new java.util.LinkedHashMap<>(super.capabilities(context));
+            if ("new".equals(context.getTarget().getResourcePoolId())) {
+              result.put("STOP", "UNSUPPORTED");
+              result.put("SNAPSHOT", "UNSUPPORTED");
+            }
+            return result;
+          }
+
+          @Override
+          public Observation dispatch(Context context, OperationStep step) {
+            assertThat(context.getTarget().getResourcePoolId()).isEqualTo("original");
+            return super.dispatch(context, step);
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.sql.update("update t_flink_managed_env set target=?", "{\"resourcePoolId\":\"original\"}");
+    test.complete(test.publish("publish", test.command()));
+    Command start = new Command();
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    start.setRestore(restore);
+    start.setExpectedReleaseId(test.jobField("active_release_id"));
+    test.complete(test.enqueue(CommandType.START, "start", start));
+
+    test.sql.update("update t_flink_managed_env set target=?", "{\"resourcePoolId\":\"new\"}");
+    Map<String, Object> details = test.jobs.detail(100000L, 900401L);
+    assertThat(((Map<?, ?>) details.get("capabilities")).get("STOP")).isEqualTo("UNSUPPORTED");
+    assertThat(((Map<?, ?>) details.get("runtimeCapabilities")).get("STOP")).isEqualTo("AVAILABLE");
+    Command stop = new Command();
+    stop.setExpectedRunId(test.jobField("current_run_id"));
+    stop.setMode("AFTER_SNAPSHOT");
+    String operation = test.enqueue(CommandType.STOP, "stop", stop);
+    String encoded =
+        test.sql.queryForObject(
+            "select command from t_flink_managed_operation where id=?", String.class, operation);
+    ManagedFlinkModels.FrozenCommand frozen =
+        test.store.decode(encoded, ManagedFlinkModels.FrozenCommand.class);
+    assertThat(frozen.getTarget().getResourcePoolId()).isEqualTo("original");
+    // An older Console could have enqueued this command with the edited pool.
+    frozen.getTarget().setResourcePoolId("new");
+    test.sql.update(
+        "update t_flink_managed_operation set command=? where id=?",
+        test.store.encode(frozen),
+        operation);
+    test.complete(operation);
+    assertThat(test.jobField("pending_operation_id")).isNull();
+  }
+
+  @Test
   void liveWorkerRenewsItsLeaseWhileWaitingForProvider() throws Exception {
     RecordingProvider provider = new RecordingProvider(true, true);
     Fixture test = new Fixture(provider);
@@ -451,14 +525,19 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
-  void confirmedStartupFailureKeepsRunEvidenceAndShowsFailedStep() {
+  void unsuccessfulStartupKeepsTerminalRunEvidenceAndReleasesPendingOperation() {
+    assertTerminalStartup("FAILED");
+    assertTerminalStartup("STOPPED");
+  }
+
+  private void assertTerminalStartup(String terminal) {
     MockManagedFlinkProvider provider =
         new MockManagedFlinkProvider() {
           @Override
           public Observation observe(Context context, OperationStep step, Observation ack) {
             Observation result = super.observe(context, step, ack);
             if (step.getAction() == Action.START) {
-              result.setRunState("FAILED");
+              result.setRunState(terminal);
               result.setInstanceStartedAt(Long.MAX_VALUE);
             }
             return result;
@@ -491,14 +570,15 @@ class ManagedFlinkLifecycleTest {
                     + "where operation_id=? and action='START'",
                 operation))
         .containsEntry("state", "FAILED")
-        .containsEntry("error_code", "RUNTIME_FAILED")
+        .containsEntry(
+            "error_code", "STOPPED".equals(terminal) ? "RUNTIME_STOPPED" : "RUNTIME_FAILED")
         .containsEntry("request_id", "mock-" + operation);
     assertThat(
             test.sql.queryForMap(
                 "select run_state,provider_instance_id,release_id from t_flink_managed_run "
                     + "where id=?",
                 test.jobField("current_run_id")))
-        .containsEntry("run_state", "FAILED")
+        .containsEntry("run_state", terminal)
         .containsEntry("provider_instance_id", "instance-" + operation)
         .containsEntry("release_id", release);
   }

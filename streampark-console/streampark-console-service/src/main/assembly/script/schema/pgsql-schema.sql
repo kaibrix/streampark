@@ -929,6 +929,16 @@ CREATE TABLE IF NOT EXISTS public.t_flink_managed_operation_step (
   PRIMARY KEY (operation_id, step_index)
 );
 
+CREATE TABLE IF NOT EXISTS public.t_flink_managed_log_cursor (
+  id varchar(36) PRIMARY KEY,
+  scope_hash varchar(64) NOT NULL,
+  window_from bigint NOT NULL,
+  window_until bigint NOT NULL,
+  provider_context varchar(2048) NOT NULL,
+  expires_at bigint NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_managed_log_cursor_expiry ON public.t_flink_managed_log_cursor (expires_at);
+
 CREATE TABLE IF NOT EXISTS public.t_flink_managed_snapshot (
   id varchar(36) PRIMARY KEY,
   app_id bigint NOT NULL REFERENCES public.t_flink_managed_job (app_id),

@@ -183,7 +183,8 @@ public class ManagedFlinkCatalog {
                 team,
                 credentialVersion);
     check(refreshed == 1, HttpStatus.CONFLICT, "Environment or credentials changed during probe");
-    Map<String, String> scopedReport = baseCapabilities(environment, connection);
+    Map<String, String> scopedReport =
+        baseCapabilities(environment, connection, target(environment));
     scopedReport.putAll(reads);
     return applyIdentityStatus(scopedReport);
   }
@@ -331,9 +332,15 @@ public class ManagedFlinkCatalog {
     authorize(team, "app:view");
     Map<String, Object> env = environment(team, environmentId, false);
     Map<String, Object> conn = connection(team, text(env, "connection_id"));
-    Map<String, String> report = baseCapabilities(env, conn);
+    return capabilities(env, conn, target(env));
+  }
+
+  Map<String, String> capabilities(
+      Map<String, Object> env, Map<String, Object> conn, Target target) {
+    Map<String, String> report = baseCapabilities(env, conn, target);
     String saved = text(env, "capability_report");
     if (saved != null
+        && target.equals(target(env))
         && Objects.equals(
             text(env, "capability_credential_version"), text(conn, "credential_version"))) {
       ReadReport reads = store.decode(saved, ReadReport.class);
@@ -354,7 +361,8 @@ public class ManagedFlinkCatalog {
     return report;
   }
 
-  private Map<String, String> baseCapabilities(Map<String, Object> env, Map<String, Object> conn) {
+  Map<String, String> baseCapabilities(
+      Map<String, Object> env, Map<String, Object> conn, Target target) {
     return new LinkedHashMap<>(
         provider(text(conn, "provider"))
             .capabilities(
@@ -362,7 +370,7 @@ public class ManagedFlinkCatalog {
                     number(env, "team_id"),
                     text(env, "region"),
                     text(conn, "account_ref"),
-                    target(env),
+                    target,
                     null,
                     text(conn, "credential") == null)));
   }

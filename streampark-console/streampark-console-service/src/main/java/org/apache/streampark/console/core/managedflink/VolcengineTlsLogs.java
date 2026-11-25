@@ -21,8 +21,6 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Contex
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQuery;
 import org.apache.streampark.console.core.managedflink.VolcengineOpenApi.Reply;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -39,7 +37,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -69,10 +66,10 @@ final class VolcengineTlsLogs {
   private final String levelField;
   private final String messageField;
   private final boolean enabled;
-  private final Cache<String, Page> pages =
-      CacheBuilder.newBuilder().maximumSize(1024).expireAfterWrite(5, TimeUnit.MINUTES).build();
+  private final ManagedFlinkStore store;
 
   VolcengineTlsLogs(
+      ManagedFlinkStore store,
       @Value("${streampark.managed-flink.volcengine.logs-enabled:false}") boolean enabled,
       @Value("${streampark.managed-flink.volcengine.logs-region:}") String region,
       @Value("${streampark.managed-flink.volcengine.logs-topic:}") String topic,
@@ -82,6 +79,7 @@ final class VolcengineTlsLogs {
       @Value("${streampark.managed-flink.volcengine.logs-component-field:}") String componentField,
       @Value("${streampark.managed-flink.volcengine.logs-level-field:}") String levelField,
       @Value("${streampark.managed-flink.volcengine.logs-message-field:}") String messageField) {
+    this.store = store;
     this.enabled = enabled;
     this.region = region;
     this.topic = topic;
@@ -161,6 +159,8 @@ final class VolcengineTlsLogs {
         Arrays.asList(
             context.getTeamId(),
             context.getAccountRef(),
+            region,
+            topic,
             query.getActor(),
             context.getTarget().getProjectId(),
             context.getTarget().getDirectoryId(),
@@ -171,19 +171,27 @@ final class VolcengineTlsLogs {
             filter,
             query.getFrom(),
             query.getUntil());
-    Page next = null;
-    if (query.getCursor() != null) {
-      next = pages.getIfPresent(query.getCursor());
-      check(
-          next != null && scope.equals(next.scope),
-          HttpStatus.BAD_REQUEST,
-          "Invalid or expired log cursor");
-    }
+    String scopeHash = ManagedFlinkStore.hash(store.encode(scope));
     long now = Instant.now().toEpochMilli();
-    VolcengineMonitor.Window bounds =
-        next == null
-            ? VolcengineMonitor.window(runStart, runEnd, query.getFrom(), query.getUntil(), now)
-            : new VolcengineMonitor.Window(next.from, next.until);
+    VolcengineMonitor.Window bounds;
+    String previousContext = null;
+    if (query.getCursor() == null) {
+      bounds = VolcengineMonitor.window(runStart, runEnd, query.getFrom(), query.getUntil(), now);
+    } else {
+      Map<String, Object> page =
+          store.find(
+              "select window_from,window_until,provider_context from t_flink_managed_log_cursor "
+                  + "where id=? and scope_hash=? and expires_at>?",
+              query.getCursor(),
+              scopeHash,
+              now);
+      check(page != null, HttpStatus.BAD_REQUEST, "Invalid or expired log cursor");
+      bounds =
+          new VolcengineMonitor.Window(
+              ManagedFlinkStore.number(page, "window_from"),
+              ManagedFlinkStore.number(page, "window_until"));
+      previousContext = ManagedFlinkStore.text(page, "provider_context");
+    }
     long from = bounds.from;
     long until = bounds.until;
     if (from >= until) {
@@ -208,8 +216,7 @@ final class VolcengineTlsLogs {
         || (!level.isEmpty() && !exactIndex(schema.data(), levelField))) {
       return status("NEEDS_CONFIGURATION");
     }
-    Reply response =
-        api.search(request(topic, filter, from, until, next == null ? null : next.context));
+    Reply response = api.search(request(topic, filter, from, until, previousContext));
     if (!response.ok()) {
       return failure(response);
     }
@@ -229,9 +236,21 @@ final class VolcengineTlsLogs {
         && contextToken != null
         && !contextToken.isEmpty()
         && contextToken.length() <= 2048
-        && (next == null || !contextToken.equals(next.context))) {
-      String token = UUID.randomUUID().toString();
-      pages.put(token, new Page(scope, from, until, contextToken));
+        && !contextToken.equals(previousContext)) {
+      String token = ManagedFlinkStore.id();
+      long issuedAt = System.currentTimeMillis();
+      store.jdbc().update("delete from t_flink_managed_log_cursor where expires_at<=?", issuedAt);
+      store
+          .jdbc()
+          .update(
+              "insert into t_flink_managed_log_cursor (id,scope_hash,window_from,window_until,provider_context,expires_at) "
+                  + "values (?,?,?,?,?,?)",
+              token,
+              scopeHash,
+              from,
+              until,
+              contextToken,
+              issuedAt + TimeUnit.MINUTES.toMillis(5));
       result.put("nextCursor", token);
     }
     result.put("rows", rows);
@@ -402,19 +421,5 @@ final class VolcengineTlsLogs {
     Map<String, Object> copy = new LinkedHashMap<>(result);
     copy.put("requestIdSuffix", id.substring(id.length() - 6));
     return copy;
-  }
-
-  private static final class Page {
-    private final List<Object> scope;
-    private final long from;
-    private final long until;
-    private final String context;
-
-    private Page(List<Object> scope, long from, long until, String context) {
-      this.scope = scope;
-      this.from = from;
-      this.until = until;
-      this.context = context;
-    }
   }
 }

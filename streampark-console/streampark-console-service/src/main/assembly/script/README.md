@@ -26,7 +26,9 @@ For example:
 
 For an existing 2.1.7 database, apply `upgrade/mysql/2.1.7.sql` or
 `upgrade/pgsql/2.1.7.sql` before upgrading all Console instances. For a fresh
-installation, use the matching schema and data scripts above.
+installation, use the matching schema and data scripts above. If you already ran
+an earlier 2.1.7 preview, rerun the upgrade script to create the shared TLS
+log cursor table. Restart any open log search after upgrading.
 
 For an isolated local Console, set these Spring properties:
 

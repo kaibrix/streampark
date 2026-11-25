@@ -36,6 +36,11 @@ export interface Spec {
 export interface Job {
   appId: string;
   environmentId: string;
+  environmentName: string;
+  provider: string;
+  configVersion: number;
+  capabilities: Capabilities;
+  runtimeCapabilities: Capabilities;
   engineRef: string;
   draftRevision: string;
   activeReleaseId?: string;

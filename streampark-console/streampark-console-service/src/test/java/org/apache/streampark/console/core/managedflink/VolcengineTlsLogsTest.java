@@ -56,16 +56,23 @@ class VolcengineTlsLogsTest {
       "{\"KeyValue\":[{\"Key\":\"application_id\",\"Value\":{\"ValueType\":\"text\","
           + "\"CaseSensitive\":true,\"Delimiter\":\"\"}},{\"Key\":\"deployment_id\",\"Value\":{"
           + "\"ValueType\":\"text\",\"CaseSensitive\":true,\"Delimiter\":\"\"}}]}";
-  private final VolcengineTlsLogs logs =
-      new VolcengineTlsLogs(
-          true,
-          REGION,
-          TOPIC,
-          "application_id",
-          "deployment_id",
-          "component",
-          "severity",
-          "message");
+  private final ManagedFlinkStore store =
+      new ManagedFlinkLifecycleTest.Fixture(new MockManagedFlinkProvider()).store;
+  private final VolcengineTlsLogs logs = replica();
+
+  private VolcengineTlsLogs replica() {
+    return new VolcengineTlsLogs(
+        store,
+        true,
+        REGION,
+        TOPIC,
+        "application_id",
+        "deployment_id",
+        "component",
+        "severity",
+        "message");
+  }
+
   private final VolcengineTlsLogs.SearchApi api = mock(VolcengineTlsLogs.SearchApi.class);
 
   @Test
@@ -164,11 +171,14 @@ class VolcengineTlsLogsTest {
         .isInstanceOf(ResponseStatusException.class);
     assertThatThrownBy(() -> logs.read(api, context, "job2", run, next))
         .isInstanceOf(ResponseStatusException.class);
-    assertThat(logs.read(api, context, "job1", run, next))
+    assertThat(replica().read(api, context, "job1", run, next))
         .containsEntry("status", "PARTIAL")
         .containsEntry("from", page.get("from"))
         .containsEntry("until", page.get("until"))
         .doesNotContainKey("nextCursor");
+    store.jdbc().update("update t_flink_managed_log_cursor set expires_at=0 where id=?", cursor);
+    assertThatThrownBy(() -> replica().read(api, context, "job1", run, next))
+        .isInstanceOf(ResponseStatusException.class);
     verify(api)
         .search(
             eq(

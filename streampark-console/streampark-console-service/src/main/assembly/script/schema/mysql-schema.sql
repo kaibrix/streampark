@@ -657,6 +657,16 @@ CREATE TABLE IF NOT EXISTS t_flink_managed_operation_step (
   FOREIGN KEY (operation_id) REFERENCES t_flink_managed_operation (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE IF NOT EXISTS t_flink_managed_log_cursor (
+  id varchar(36) PRIMARY KEY,
+  scope_hash varchar(64) NOT NULL,
+  window_from bigint NOT NULL,
+  window_until bigint NOT NULL,
+  provider_context varchar(2048) NOT NULL,
+  expires_at bigint NOT NULL,
+  KEY idx_managed_log_cursor_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE IF NOT EXISTS t_flink_managed_snapshot (
   id varchar(36) PRIMARY KEY,
   app_id bigint NOT NULL,
