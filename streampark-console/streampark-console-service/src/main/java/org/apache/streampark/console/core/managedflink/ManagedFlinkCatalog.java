@@ -418,17 +418,28 @@ public class ManagedFlinkCatalog {
               releaseId,
               job.get("app_id"));
       if (released != null) {
-        Target target = store.decode(text(released, "target"), Target.class);
-        if (frozen == null || frozen.equals(target)) {
-          if (text(job, "provider_draft_id") == null && text(job, "provider_job_id") != null) {
-            target.setDirectJobId(text(job, "provider_job_id"));
-            target.setDirectReleaseId(releaseId);
+        Target releaseTarget = store.decode(text(released, "target"), Target.class);
+        Target target = frozen == null ? releaseTarget : frozen;
+        if (text(job, "provider_draft_id") == null
+            && text(job, "provider_job_id") != null
+            && sameExecutionScope(target, releaseTarget)) {
+          if (frozen != null) {
+            target = store.decode(store.encode(frozen), Target.class);
           }
-          return context(conn, env, target);
+          target.setDirectJobId(text(job, "provider_job_id"));
+          target.setDirectReleaseId(releaseId);
         }
+        return context(conn, env, target);
       }
     }
     return context(conn, env, frozen);
+  }
+
+  private boolean sameExecutionScope(Target current, Target released) {
+    return released != null
+        && Objects.equals(current.getProjectId(), released.getProjectId())
+        && Objects.equals(current.getDirectoryId(), released.getDirectoryId())
+        && Objects.equals(current.getResourcePoolId(), released.getResourcePoolId());
   }
 
   String scope(Map<String, Object> conn, Map<String, Object> env) {

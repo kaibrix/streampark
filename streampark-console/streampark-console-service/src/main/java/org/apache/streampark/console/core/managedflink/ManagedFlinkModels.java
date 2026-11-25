@@ -224,6 +224,8 @@ public final class ManagedFlinkModels {
     private String jobName;
     private String providerVersion;
     private String providerInstance;
+    // An empty baseline denotes a verified empty history before the cloud write.
+    private String instanceBeforeDispatch;
     private String restoreRef;
     private String artifactRef;
     private String artifactDigest;
@@ -285,6 +287,7 @@ public final class ManagedFlinkModels {
     private final String stagedArtifact;
     // Set only for the individual dependency currently being staged.
     private DependencyArtifact dependency;
+    private long dispatchedAt;
   }
 
   public enum ReadStatus {

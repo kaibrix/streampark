@@ -248,6 +248,7 @@ class ManagedFlinkWorker {
     }
     Observation response;
     try {
+      step.setDispatchedAt(number(attempt, "started_at"));
       String persisted = text(attempt, "result");
       response =
           provider.observe(
@@ -279,6 +280,9 @@ class ManagedFlinkWorker {
           : "ARTIFACT_UNREADABLE";
     }
     if (step.getProviderJobId() == null) {
+      if (step.getAction() == Action.SUBMIT) {
+        step.getCommand().setInstanceBeforeDispatch("");
+      }
       return null;
     }
     CloudState state;
@@ -320,6 +324,9 @@ class ManagedFlinkWorker {
         && step.getCommand().getProviderInstance() != null
         && !Objects.equals(step.getCommand().getProviderInstance(), state.getInstanceId())) {
       return "DRIFTED";
+    }
+    if (stopped && (step.getAction() == Action.START || step.getAction() == Action.SUBMIT)) {
+      step.getCommand().setInstanceBeforeDispatch(Objects.toString(state.getInstanceId(), ""));
     }
     return stopped ? null : "DRIFTED";
   }
@@ -452,6 +459,14 @@ class ManagedFlinkWorker {
             index,
             step.getAction().name(),
             System.currentTimeMillis());
+    if (step.getCommand().getInstanceBeforeDispatch() != null) {
+      store
+          .jdbc()
+          .update(
+              "update t_flink_managed_operation set command=? where id=?",
+              store.encode(step.getCommand()),
+              step.getOperationId());
+    }
     return true;
   }
 

@@ -792,10 +792,12 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   @Override
   public Observation observe(Context context, OperationStep step, Observation previous) {
-    if (step.getAction() == ManagedFlinkModels.Action.RESTART
-        && (previous == null
-            || step.getProviderJobId() == null
-            || !step.getProviderJobId().equals(previous.getJobId()))) {
+    String reportedJob = previous == null ? null : previous.getJobId();
+    boolean restart = step.getAction() == ManagedFlinkModels.Action.RESTART;
+    if (restart
+        && (step.getProviderJobId() == null
+            || (reportedJob == null && step.getDispatchedAt() <= 0)
+            || (reportedJob != null && !reportedJob.equals(step.getProviderJobId())))) {
       return awaiting();
     }
     try {
@@ -838,20 +840,18 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         case START:
         case RESTART:
           String acknowledgedInstance = previous == null ? null : previous.getInstanceId();
-          if (step.getAction() == ManagedFlinkModels.Action.RESTART) {
-            acknowledgedInstance = restartedInstance(api, target, step);
-          }
-          if (acknowledgedInstance == null) {
+          String submittedJob = step.getProviderJobId();
+          if (submittedJob != null && reportedJob != null && !submittedJob.equals(reportedJob)) {
             return awaiting();
           }
-          String submittedJob = step.getProviderJobId();
           String expectedVersion = step.getCommand().getProviderVersion();
           if (step.getAction() == ManagedFlinkModels.Action.SUBMIT) {
-            if (previous.getJobId() == null
-                || (submittedJob != null && !submittedJob.equals(previous.getJobId()))) {
+            if (submittedJob == null) {
+              submittedJob = reportedJob == null ? findDirectJob(api, target, step) : reportedJob;
+            }
+            if (submittedJob == null) {
               return awaiting();
             }
-            submittedJob = previous.getJobId();
             JsonObject direct =
                 application(api, target, submittedJob, step.getCommand().getReleaseMarker());
             if (!VolcengineExecutable.matches(direct, step, false)
@@ -860,6 +860,27 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             }
             expectedVersion = revision(direct);
             observation.setSpecHash(step.getCommand().getSpecHash());
+          }
+          if (restart || acknowledgedInstance == null) {
+            String prior =
+                restart
+                    ? step.getCommand().getProviderInstance()
+                    : step.getCommand().getInstanceBeforeDispatch();
+            acknowledgedInstance =
+                successor(
+                    api,
+                    target,
+                    submittedJob,
+                    prior,
+                    step.getDispatchedAt(),
+                    restart,
+                    restart && reportedJob != null,
+                    step.getAction() == ManagedFlinkModels.Action.SUBMIT
+                        ? step.getCommand().getReleaseMarker()
+                        : null);
+          }
+          if (acknowledgedInstance == null) {
+            return awaiting();
           }
           JsonObject instance = instance(api, target, submittedJob, acknowledgedInstance);
           if (instance == null
@@ -1052,30 +1073,88 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         });
   }
 
-  private String restartedInstance(VolcengineOpenApi api, Target target, OperationStep step)
+  private String findDirectJob(VolcengineOpenApi api, Target target, OperationStep step)
       throws IOException {
-    String job = step.getProviderJobId();
-    String oldId = step.getCommand().getProviderInstance();
-    JsonObject old = instance(api, target, job, oldId);
-    if (old == null || !same(old, "State", "STOPPED")) {
+    Reply reply = listJobs(api, target, step.getCommand().getJobName());
+    reply.checkReadBackoff();
+    List<JsonObject> records = rows(reply.data().get("Records"));
+    if (!reply.ok() || safeNumber(text(reply.data(), "Total")) != records.size()) {
       return null;
     }
-    JsonObject published = application(api, target, job);
-    List<JsonObject> history = instanceHistory(api, target, job);
-    if (published == null || history == null) {
+    String found = null;
+    for (JsonObject row : records) {
+      String id = text(row, "Id");
+      if (same(row, "JobName", step.getCommand().getJobName())
+          && application(api, target, id, step.getCommand().getReleaseMarker()) != null) {
+        if (found != null) {
+          return null;
+        }
+        found = id;
+      }
+    }
+    return found;
+  }
+
+  private String successor(
+      VolcengineOpenApi api,
+      Target target,
+      String job,
+      String prior,
+      long dispatchedAt,
+      boolean restart,
+      boolean acknowledgedRestart,
+      String directRelease)
+      throws IOException {
+    if (job == null || (prior == null && (restart || dispatchedAt <= 0))) {
       return null;
     }
-    // The public restart acknowledges only the job ID. Confirm its unique successor and the
-    // application's current runtime before recording the observed instance.
+    boolean hasPrior = StringUtils.isNotEmpty(prior);
+    JsonObject old = hasPrior ? instance(api, target, job, prior) : null;
+    if (hasPrior
+        && (old == null
+            || !TERMINAL.contains(runState(old))
+            || (restart && !same(old, "State", "STOPPED")))) {
+      return null;
+    }
+    JsonObject published =
+        directRelease == null
+            ? application(api, target, job)
+            : application(api, target, job, directRelease);
+    Reply reply = instances(api, target, job, 1);
+    long total = safeNumber(text(reply.data(), "Total"));
+    List<JsonObject> recent = instancePage(reply, target, job, 1, total);
+    if (published == null || recent == null || recent.isEmpty()) {
+      return null;
+    }
+    // The response is ordered by descending start time. Never infer uniqueness across a
+    // truncated page whose oldest entry could still be a successor.
+    // Steps dispatched by older Consoles only have a local dispatch timestamp. Require the
+    // candidate to start strictly later, since cloud timestamps have second precision.
+    long cutoff = prior == null ? dispatchedAt + 1 : Long.MIN_VALUE;
+    final long earliest = old == null ? cutoff : startedAt(old);
+    if (total > recent.size() && startedAt(recent.get(recent.size() - 1)) >= earliest) {
+      return null;
+    }
     List<JsonObject> successors =
-        history.stream()
-            .filter(run -> !same(run, "Id", oldId) && startedAt(run) >= startedAt(old))
+        recent.stream()
+            .filter(
+                run ->
+                    !same(run, "Id", prior)
+                        && (earliest == Long.MIN_VALUE || startedAt(run) >= earliest))
             .collect(Collectors.toList());
-    if (successors.size() != 1
-        || !same(successors.get(0), "ApplicationId", text(published, "ApplicationId"))) {
+    if (successors.size() != 1) {
       return null;
     }
-    return text(successors.get(0), "Id");
+    JsonObject next = successors.get(0);
+    // A tie with the baseline could be another instance already present before dispatch.
+    if (!acknowledgedRestart && old != null && startedAt(next) == earliest) {
+      return null;
+    }
+    String runtime = text(published, "ApplicationId");
+    if ((restart || runtime != null) && !same(next, "ApplicationId", runtime)) {
+      return null;
+    }
+    return text(next, "Id");
   }
 
   private Observation submitInstance(VolcengineOpenApi api, JsonObject payload) throws IOException {

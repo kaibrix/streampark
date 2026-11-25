@@ -253,6 +253,61 @@ class VolcengineDispatchTest {
   }
 
   @Test
+  void recoversLostDirectReceiptOnlyForAUniqueInstanceOfTheMarkedRelease() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand cmd = fixture.step.getCommand();
+    cmd.setJobName("test-job");
+    cmd.setInstanceBeforeDispatch("");
+    cmd.getRequest().getRestore().setMode(RestoreMode.FROM_NEW);
+    cmd.setRestoreRef(null);
+    OperationStep direct = new OperationStep("direct", 2L, Action.SUBMIT, cmd, null, null, null);
+    fixture.publication.remove("AppDraftId");
+    fixture.directInstance = true;
+    Observation observed = fixture.provider.observe(fixture.context, direct, null);
+    assertThat(observed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+    assertThat(observed.getInstanceId()).isEqualTo("4");
+    fixture.ambiguous = true;
+    assertThat(fixture.provider.observe(fixture.context, direct, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    assertThat(fixture.actions).doesNotContain("StartApplicationInstance");
+  }
+
+  @Test
+  void publishedStartAndRestartRecoverOnlyAnUnambiguousSuccessorWithoutWriting() {
+    for (Action action : java.util.Arrays.asList(Action.START, Action.RESTART)) {
+      Fixture fixture = new Fixture(null);
+      FrozenCommand command = fixture.step.getCommand();
+      command.getRequest().getRestore().setMode(RestoreMode.FROM_NEW);
+      command.setRestoreRef(null);
+      command.setInstanceBeforeDispatch("2");
+      command.setProviderInstance("2");
+      OperationStep step = new OperationStep("operation", 2L, action, command, "draft", "3", null);
+      step.setDispatchedAt(1704067199999L);
+      fixture.directInstance = true;
+      fixture.publication.addProperty("VersionId", "v1");
+      fixture.publication.addProperty("ApplicationId", "runtime");
+      fixture.prior = fixture.response("GetApplicationInstance");
+      fixture.prior.addProperty("Id", "2");
+      fixture.prior.addProperty("State", "STOPPED");
+      fixture.prior.addProperty("StartTime", "2024-01-01 07:59:59");
+
+      Observation observed = fixture.provider.observe(fixture.context, step, null);
+      assertThat(observed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+      assertThat(observed.getInstanceId()).isEqualTo("4");
+      fixture.ambiguous = true;
+      assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
+          .isEqualTo(Outcome.WAITING);
+      fixture.ambiguous = false;
+      fixture.prior.addProperty("StartTime", fixture.startTime);
+      assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
+          .isEqualTo(Outcome.WAITING);
+      assertThat(fixture.actions)
+          .doesNotContain(
+              "StartGWSApplication", "StartApplicationInstance", "RestartGWSApplication");
+    }
+  }
+
+  @Test
   void failedSavepointOnlyEndsTheMatchingOperation() {
     Fixture fixture = new Fixture(null);
     fixture.savepointStatus = "FAIL";
@@ -266,6 +321,8 @@ class VolcengineDispatchTest {
   }
 
   private static final class Fixture {
+    private boolean ambiguous;
+    private JsonObject prior;
     private String savepointStatus;
     private boolean directInstance;
     private String startTime = "2024-01-01 08:00:00";
@@ -358,7 +415,15 @@ class VolcengineDispatchTest {
                 metadata.addProperty("RequestId", "fixture-request");
                 JsonObject envelope = new JsonObject();
                 envelope.add("ResponseMetadata", metadata);
-                envelope.add("Result", response(action));
+                JsonObject result = response(action);
+                if (prior != null && "GetApplicationInstance".equals(action)) {
+                  Buffer body = new Buffer();
+                  chain.request().body().writeTo(body);
+                  if (prior.get("Id").equals(object(body.readUtf8()).get("InstanceId"))) {
+                    result = prior;
+                  }
+                }
+                envelope.add("Result", result);
                 return new Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
@@ -401,6 +466,23 @@ class VolcengineDispatchTest {
 
     private JsonObject response(String action) {
       switch (action) {
+        case "ListGWSApplication":
+          return object("{\"Total\":1,\"Records\":[{\"Id\":\"3\",\"JobName\":\"test-job\"}]}");
+        case "ListApplicationInstance":
+          JsonObject page = object("{\"Current\":1,\"Size\":50}");
+          com.google.gson.JsonArray records = new com.google.gson.JsonArray();
+          records.add(response("GetApplicationInstance"));
+          if (ambiguous) {
+            JsonObject other = response("GetApplicationInstance");
+            other.addProperty("Id", "5");
+            records.add(other);
+          }
+          if (prior != null) {
+            records.add(prior);
+          }
+          page.add("Records", records);
+          page.addProperty("Total", records.size());
+          return page;
         case "GetCallerIdentity":
           return object("{\"AccountId\":\"account\"}");
         case "GetApplicationInstance":
