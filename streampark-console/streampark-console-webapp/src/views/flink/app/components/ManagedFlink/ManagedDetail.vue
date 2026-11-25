@@ -362,14 +362,29 @@
     });
   }
 
-  function publish(name: 'publish' | 'rollback' | 'submit') {
-    command(name, {
+  type Publication = 'publish' | 'rollback' | 'submit';
+
+  function publicationRequest(name: Publication) {
+    return {
       draftRevision: editingRevision.value,
       expectedReleaseId: job.value?.activeReleaseId,
       expectedEnvVersion: job.value?.configVersion,
       restore: name === 'submit' ? { mode: 'FROM_NEW', confirmedNew: true } : undefined,
       sourceReleaseId: name === 'rollback' ? sourceReleaseId.value : undefined,
-    });
+    };
+  }
+
+  function publicationDisabled(name: Publication) {
+    return (
+      lock.value ||
+      running.value ||
+      !can('PUBLISH_' + spec.value?.type) ||
+      (name === 'rollback' ? !sourceReleaseId.value : dirty.value || !can(publishCapability.value))
+    );
+  }
+
+  function publish(name: Publication) {
+    if (!publicationDisabled(name)) command(name, publicationRequest(name));
   }
 
   async function readSelection(id: string, generation: number) {
@@ -595,6 +610,7 @@
                 >{{ t('managedFlink.validateCloudSql') }}</Button
               >
               <Popconfirm
+                :key="JSON.stringify(publicationRequest('submit'))"
                 v-if="
                   can('SUBMIT_INSTANCE') &&
                   (!job.cloudBound || job.directSubmission) &&
@@ -603,28 +619,24 @@
                   hasPermission('app:release')
                 "
                 :title="t('managedFlink.directConfirm')"
+                :disabled="publicationDisabled('submit')"
                 @confirm="publish('submit')"
               >
-                <Button :disabled="lock || dirty || running || !can(publishCapability)">{{
+                <Button :disabled="publicationDisabled('submit')">{{
                   t('managedFlink.directSubmit')
                 }}</Button>
               </Popconfirm>
               <Popconfirm
+                :key="JSON.stringify(publicationRequest('publish'))"
                 v-if="!job.directSubmission"
                 :title="t('managedFlink.publishConfirm')"
-                :disabled="lock"
+                :disabled="publicationDisabled('publish')"
                 @confirm="publish('publish')"
               >
                 <Button
                   v-auth="'app:release'"
                   type="primary"
-                  :disabled="
-                    lock ||
-                    dirty ||
-                    running ||
-                    !can('PUBLISH_' + spec.type) ||
-                    !can(publishCapability)
-                  "
+                  :disabled="publicationDisabled('publish')"
                 >
                   {{ t('managedFlink.publish') }}
                 </Button>
@@ -789,13 +801,14 @@
               "
             />
             <Popconfirm
+              :key="JSON.stringify(publicationRequest('rollback'))"
               :title="t('managedFlink.publishConfirm')"
-              :disabled="lock"
+              :disabled="publicationDisabled('rollback')"
               @confirm="publish('rollback')"
             >
               <Button
                 v-auth="'app:release'"
-                :disabled="lock || running || !sourceReleaseId || !can('PUBLISH_' + spec.type)"
+                :disabled="publicationDisabled('rollback')"
               >
                 {{ t('managedFlink.rollback') }}
               </Button>

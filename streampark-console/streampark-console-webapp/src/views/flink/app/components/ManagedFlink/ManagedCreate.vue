@@ -34,6 +34,7 @@
   import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
   import { format } from '../../FlinkSqlFormatter';
 
+  const catalogPageSize = 100;
   const CollapsePanel = Collapse.Panel;
   const FormItem = Form.Item;
   const InputPassword = Input.Password;
@@ -68,7 +69,8 @@
   const busy = ref(false);
   const message = ref('');
   const environments = ref<Environment[]>([]);
-  const connections = ref<{ id: string; name: string }[]>([]);
+  type Connection = { id: string; name: string };
+  const connections = ref<Connection[]>([]);
   const job = reactive({
     name: '',
     environmentId: '',
@@ -108,16 +110,33 @@
     },
   });
 
-  async function refresh() {
-    environments.value = await managedGet<Environment[]>('/environments');
-    available.value = true;
+  async function readCatalog<T>(path: string, firstPage?: T[]) {
+    let page = firstPage ?? (await managedGet<T[]>(path));
+    const entries = [...page];
+    while (page.length === catalogPageSize) {
+      page = await managedGet<T[]>(path, { offset: entries.length });
+      entries.push(...page);
+    }
+    return entries;
   }
 
-  onMounted(() =>
-    refresh().catch(() => {
+  function showCreate() {
+    visible.value = true;
+    if (environments.value.length === catalogPageSize) {
+      void run(async () => {
+        environments.value = await readCatalog('/environments', environments.value);
+      });
+    }
+  }
+
+  onMounted(async () => {
+    try {
+      environments.value = await managedGet<Environment[]>('/environments');
+      available.value = true;
+    } catch {
       available.value = false;
-    }),
-  );
+    }
+  });
 
   async function run(action: () => Promise<void>) {
     busy.value = true;
@@ -139,7 +158,7 @@
   function showSettings() {
     void run(async () => {
       [connections.value, providers.value] = await Promise.all([
-        managedGet<{ id: string; name: string }[]>('/connections'),
+        readCatalog<Connection>('/connections'),
         managedGet<string[]>('/providers'),
       ]);
       settings.value = true;
@@ -160,7 +179,7 @@
       });
       connection.accessKey = '';
       connection.secretKey = '';
-      connections.value = await managedGet('/connections');
+      connections.value = await readCatalog<Connection>('/connections');
       environment.connectionId = id;
     });
   }
@@ -168,7 +187,7 @@
   function addEnvironment() {
     void run(async () => {
       const id = await managedPost<string>('/environments', { ...environment });
-      await refresh();
+      environments.value = await readCatalog<Environment>('/environments');
       job.environmentId = id;
       await probe(id);
     });
@@ -199,7 +218,7 @@
 
 <template>
   <div v-if="available" class="mb-4">
-    <Button v-if="!visible" @click="visible = true">{{ t('managedFlink.create') }}</Button>
+    <Button v-if="!visible" @click="showCreate">{{ t('managedFlink.create') }}</Button>
     <Card v-else :title="t('managedFlink.create')">
       <Alert v-if="message" class="mb-4" :message="message" show-icon />
       <Form :model="job" layout="vertical" @finish="create">
@@ -264,7 +283,7 @@
             @click="listCloudJobs()"
             >{{ t('managedFlink.cloudJobs') }}</Button
           >
-          <Button v-auth="'team:update'" @click="showSettings">{{
+          <Button v-auth="'team:update'" :disabled="busy" @click="showSettings">{{
             t('managedFlink.settings')
           }}</Button>
           <Button @click="visible = false">{{ t('common.cancelText') }}</Button>

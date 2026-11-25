@@ -156,11 +156,7 @@ public class ManagedFlinkJobs {
         "Environment is fixed for this job");
     Spec spec = input.getSpec();
     validate(spec, false);
-    Spec old = store.decode(text(job, "draft_spec"), Spec.class);
-    check(
-        old.getType() == spec.getType() && old.isBatchMode() == spec.isBatchMode(),
-        HttpStatus.CONFLICT,
-        "Job type is fixed");
+    requireSameJobType(store.decode(text(job, "draft_spec"), Spec.class), spec);
     spec.getDependencyIds().forEach(id -> artifact(app, id));
     String artifactId = specArtifactId(spec);
     if (artifactId != null) {
@@ -215,17 +211,16 @@ public class ManagedFlinkJobs {
   public void validateDraft(long team, long app, Spec candidate) {
     catalog.authorize(team, "app:update");
     Map<String, Object> job = job(team, app, false);
-    Spec spec = candidate == null ? store.decode(text(job, "draft_spec"), Spec.class) : candidate;
+    Spec saved = store.decode(text(job, "draft_spec"), Spec.class);
+    Spec spec = candidate == null ? saved : candidate;
     validate(spec, true);
+    requireSameJobType(saved, spec);
     Map<String, Object> environment = catalog.environment(team, text(job, "environment_id"), false);
     Map<String, Object> connection = catalog.connection(team, text(environment, "connection_id"));
     validateProviderSpec(
         catalog.provider(text(connection, "provider")), spec, text(job, "engine_ref"));
     spec.getDependencyIds().forEach(id -> artifact(app, id));
-    String artifactId = specArtifactId(spec);
-    if (artifactId != null) {
-      artifact(app, artifactId);
-    }
+    publicationArtifact(app, spec);
   }
 
   String validateCloudSql(long team, long app, String sql) {
@@ -491,18 +486,11 @@ public class ManagedFlinkJobs {
         && (spec.getUdfArtifactId() != null || !spec.getDependencyIds().isEmpty())) {
       capability(capabilities, "PUBLISH_SQL_UDF");
     }
-    String artifactId = specArtifactId(spec);
-    if (artifactId != null) {
-      Map<String, Object> artifact = artifact(app, artifactId);
+    Map<String, Object> artifact = publicationArtifact(app, spec);
+    if (artifact != null) {
       frozen.setArtifactRef(text(artifact, "object_ref"));
       frozen.setArtifactDigest(text(artifact, "digest"));
       frozen.setArtifactSize(number(artifact, "size_bytes"));
-      if (spec.getType() == JobType.JAR) {
-        if (spec.getMainClass() == null || spec.getMainClass().trim().isEmpty()) {
-          spec.setMainClass(text(artifact, "main_class"));
-        }
-        required(spec.getMainClass(), 255);
-      }
     }
     frozen.setSpec(spec);
     String encoded = store.encode(spec);
@@ -842,6 +830,31 @@ public class ManagedFlinkJobs {
       default:
         return "app:release";
     }
+  }
+
+  private void requireSameJobType(Spec old, Spec spec) {
+    check(
+        old.getType() == spec.getType() && old.isBatchMode() == spec.isBatchMode(),
+        HttpStatus.CONFLICT,
+        "Job type is fixed");
+  }
+
+  private Map<String, Object> publicationArtifact(long app, Spec spec) {
+    String artifactId = specArtifactId(spec);
+    if (artifactId == null) {
+      return null;
+    }
+    Map<String, Object> artifact = artifact(app, artifactId);
+    if (spec.getType() == JobType.JAR) {
+      String mainClass =
+          StringUtils.defaultIfBlank(spec.getMainClass(), text(artifact, "main_class"));
+      check(
+          StringUtils.isNotBlank(mainClass) && mainClass.length() <= 255,
+          HttpStatus.BAD_REQUEST,
+          "Set a JAR main class or provide a valid Main-Class manifest entry");
+      spec.setMainClass(mainClass);
+    }
+    return artifact;
   }
 
   private String specArtifactId(Spec spec) {

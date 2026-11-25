@@ -29,6 +29,7 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -39,6 +40,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ManagedFlinkArtifactAndReleaseTest {
 
@@ -185,6 +187,45 @@ class ManagedFlinkArtifactAndReleaseTest {
                 operation))
         .containsExactly("CREATE_DRAFT", "LOCK_DRAFT", "UPDATE_DRAFT", "PUBLISH");
     assertThat(countRuns(test)).isZero();
+  }
+
+  @Test
+  void validationRequiresAnExplicitOrManifestMainClass() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    Spec jar = new Spec();
+    jar.setType(JobType.JAR);
+    jar.setArtifactId("entrypoint-test");
+    test.sql.update(
+        "update t_flink_managed_job set draft_spec=? where app_id=?", test.store.encode(jar), APP);
+    test.sql.update(
+        "insert into t_flink_managed_artifact (id,app_id,digest,size_bytes,object_ref,created_at)"
+            + " values (?,?,?,1,?,1)",
+        jar.getArtifactId(),
+        APP,
+        "digest",
+        "fixture.jar");
+
+    assertThatThrownBy(() -> test.jobs.validateDraft(TEAM, APP, null))
+        .isInstanceOf(ResponseStatusException.class);
+    jar.setMainClass("example.Explicit");
+    test.jobs.validateDraft(TEAM, APP, jar);
+    test.sql.update(
+        "update t_flink_managed_artifact set main_class=? where id=?",
+        "example.Manifest",
+        jar.getArtifactId());
+    test.jobs.validateDraft(TEAM, APP, null);
+  }
+
+  @Test
+  void validationRejectsChangingTheProcessingModeOfAnExistingDraft() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    Spec sql = new Spec();
+    sql.setType(JobType.SQL);
+    sql.setSql("SELECT 1");
+    sql.setBatchMode(true);
+    assertThatThrownBy(() -> test.jobs.validateDraft(TEAM, APP, sql))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("Job type is fixed");
   }
 
   @Test
