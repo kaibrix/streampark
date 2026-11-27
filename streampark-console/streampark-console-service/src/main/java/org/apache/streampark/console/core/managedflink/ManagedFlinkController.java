@@ -21,7 +21,9 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Comman
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ConnectionInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.EnvironmentInput;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.FrozenCommand;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationResolution;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 
 import lombok.Value;
@@ -56,6 +58,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.check;
+import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.number;
+import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.text;
 
 @RestController
 @RequestMapping("/flink/managed")
@@ -171,6 +175,11 @@ public class ManagedFlinkController {
     return ok(jobs.detail(teamId, appId));
   }
 
+  @GetMapping("/apps/{appId}/copy-spec")
+  Body<Spec> copySpec(@RequestParam long teamId, @PathVariable long appId) {
+    return ok(jobs.copySpec(teamId, appId));
+  }
+
   @PatchMapping("/apps/{appId}")
   Body<Void> edit(
       @RequestParam long teamId, @PathVariable long appId, @RequestBody JobInput input) {
@@ -222,6 +231,18 @@ public class ManagedFlinkController {
     private String jar;
   }
 
+  @PostMapping("/apps/{appId}/artifacts/cloud")
+  Body<String> importCloud(
+      @RequestParam long teamId, @PathVariable long appId, @RequestBody CloudArtifact input)
+      throws IOException {
+    return ok(artifacts.importCloud(teamId, appId, input.uri));
+  }
+
+  @lombok.Data
+  static class CloudArtifact {
+    private String uri;
+  }
+
   @GetMapping("/apps/{appId}/artifacts/{id}")
   Body<Map<String, Object>> artifact(
       @RequestParam long teamId, @PathVariable long appId, @PathVariable String id) {
@@ -269,9 +290,20 @@ public class ManagedFlinkController {
   ResponseEntity<Body<Map<String, Object>>> cloudInstance(
       @RequestParam long teamId, @PathVariable long appId, @PathVariable String instanceId) {
     requireRead(teamId, appId);
-    return ResponseEntity.ok()
-        .cacheControl(CacheControl.noStore())
-        .body(ok(jobs.cloudInstance(teamId, appId, instanceId)));
+    Map<String, Object> instance = jobs.cloudInstance(teamId, appId, instanceId);
+    if (instance.get("dashboard") != null) {
+      try {
+        catalog.authorize(teamId, "app:log");
+      } catch (ResponseStatusException denied) {
+        if (denied.getStatus() != HttpStatus.FORBIDDEN) {
+          throw denied;
+        }
+        instance = new LinkedHashMap<>(instance);
+        instance.remove("dashboard");
+        instance.put("dashboardStatus", "FORBIDDEN");
+      }
+    }
+    return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ok(instance));
   }
 
   @GetMapping("/apps/{appId}/cloud")
@@ -358,16 +390,7 @@ public class ManagedFlinkController {
     Map<String, Object> job = jobs.job(teamId, appId, false);
     Map<String, Object> options = new LinkedHashMap<>();
     options.put("releaseId", job.get("active_release_id"));
-    options.put(
-        "snapshots",
-        store
-            .jdbc()
-            .queryForList(
-                "select id,run_id,release_id,created_at "
-                    + "from t_flink_managed_snapshot where app_id=? and release_id=? and restorable=true "
-                    + "and state='AVAILABLE' order by created_at desc,id desc limit 100",
-                appId,
-                job.get("active_release_id")));
+    options.put("snapshots", jobs.restoreOptions(appId, text(job, "active_release_id")));
     return ok(options);
   }
 
@@ -413,9 +436,10 @@ public class ManagedFlinkController {
   Body<Map<String, Object>> operation(
       @RequestParam long teamId, @PathVariable long appId, @PathVariable String id) {
     requireRead(teamId, appId);
+    Map<String, Object> row = operationRow(teamId, appId, id);
     Map<String, Object> operation =
         view(
-            operationRow(teamId, appId, id),
+            row,
             "id",
             "command_type",
             "status",
@@ -423,50 +447,53 @@ public class ManagedFlinkController {
             "created_at",
             "updated_at",
             "created_by");
-    operation.put(
-        "steps",
+    List<Map<String, Object>> steps =
         store
             .jdbc()
             .queryForList(
                 "select step_index,action,state,request_id,error_code,"
                     + "started_at,finished_at from t_flink_managed_operation_step "
                     + "where operation_id=? order by step_index",
-                id));
+                id);
+    operation.put("steps", steps);
+    FrozenCommand command = store.decode(text(row, "command"), FrozenCommand.class);
+    long index = number(row, "step_index");
+    Map<String, Object> current =
+        steps.stream()
+            .filter(step -> number(step, "step_index") == index)
+            .findFirst()
+            .orElse(Collections.emptyMap());
+    boolean awaitingReview = "VERIFY_REQUIRED".equals(text(row, "status"));
+    boolean confirmed = "CONFIRMED".equals(text(current, "state"));
+    operation.put(
+        "canContinue", awaitingReview && confirmed && index + 1 < command.getActions().size());
+    operation.put(
+        "canConfirmDraft",
+        awaitingReview && !confirmed && "CREATE_DRAFT".equals(text(current, "action")));
+    operation.put("reviewHistory", command.getReviewHistory());
     return ok(operation);
   }
 
   @PostMapping("/apps/{appId}/operations/{id}/reconcile")
   Body<Void> reconcile(
       @RequestParam long teamId, @PathVariable long appId, @PathVariable String id) {
-    catalog.authorize(teamId, "app:release");
-    jobs.job(teamId, appId, false);
-    Map<String, Object> row = operationRow(teamId, appId, id);
-    long now = System.currentTimeMillis();
-    // An existing attempt is required to guarantee that reconciliation takes the read branch.
-    int count =
-        store
-            .jdbc()
-            .update(
-                "update t_flink_managed_operation set status='WAITING_PROVIDER',"
-                    + "deadline_at=?,next_run_at=?,updated_at=? where id=? and team_id=? and app_id=? "
-                    + "and status='VERIFY_REQUIRED' and step_index=? and exists (select 1 from t_flink_managed_operation_step "
-                    + "where operation_id=? and step_index=?)",
-                now + 300_000,
-                now,
-                now,
-                id,
-                teamId,
-                appId,
-                row.get("step_index"),
-                id,
-                row.get("step_index"));
-    check(count == 1, HttpStatus.CONFLICT, "No dispatched step available for reconciliation");
+    jobs.reviewOperation(teamId, appId, id, null);
+    return ok(null);
+  }
+
+  @PostMapping("/apps/{appId}/operations/{id}/resolve")
+  Body<Void> resolve(
+      @RequestParam long teamId,
+      @PathVariable long appId,
+      @PathVariable String id,
+      @RequestBody OperationResolution resolution) {
+    jobs.reviewOperation(teamId, appId, id, resolution);
     return ok(null);
   }
 
   private Map<String, Object> operationRow(long team, long app, String id) {
     return store.require(
-        "select id,command_type,status,step_index,created_at,updated_at,created_by "
+        "select id,command_type,status,step_index,created_at,updated_at,created_by,command "
             + "from t_flink_managed_operation where team_id=? and app_id=? and id=?",
         team,
         app,

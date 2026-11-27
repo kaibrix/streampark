@@ -170,6 +170,22 @@ class VolcengineInstanceHistoryTest {
   }
 
   @Test
+  void acceptsOnlyAnAuthoritativeMissingJobResponseForTheRequestedId() {
+    Fixture fixture = new Fixture(page -> history(1, 0, 0, 0));
+    fixture.missingJob = "31";
+    assertThat(fixture.inspect().getStatus()).isEqualTo(ReadStatus.MISSING);
+    fixture.missingJob = "32";
+    assertThat(fixture.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
+    fixture.missingJob = "31";
+    fixture.missingRequestId = true;
+    assertThat(fixture.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
+    assertThat(fixture.requestedPages).isEmpty();
+
+    Fixture gateway = new Fixture(page -> history(1, 0, 0, 0), "GetGWSApplication", 0, 404, null);
+    assertThat(gateway.inspect().getStatus()).isEqualTo(ReadStatus.STALE);
+  }
+
+  @Test
   void propagatesThrottlingAuthorizationAndRetryAfterThroughEveryRead() {
     long now = System.currentTimeMillis();
     Fixture throttled =
@@ -270,13 +286,30 @@ class VolcengineInstanceHistoryTest {
         .containsEntry("dashboard", "https://demo.openstudio.ivolces.com/ui/");
     assertThat(fixture.provider.cloudInstance(fixture.context, "31", "999"))
         .containsEntry("status", "STALE");
-    assertThat(VolcengineManagedFlinkProvider.dashboardUrl("https://outside.invalid/ui/")).isNull();
-    assertThat(
-            VolcengineManagedFlinkProvider.dashboardUrl("http://demo.openstudio.ivolces.com/ui/"))
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl("https://outside.invalid/ui/", "s-101"))
         .isNull();
     assertThat(
             VolcengineManagedFlinkProvider.dashboardUrl(
-                "https://demo.openstudio.ivolces.com/ui/#private"))
+                "http://demo.openstudio.ivolces.com/ui/", "s-101"))
+        .isNull();
+    assertThat(
+            VolcengineManagedFlinkProvider.dashboardUrl(
+                "https://demo.openstudio.ivolces.com/ui/#private", "s-101"))
+        .isNull();
+  }
+
+  @Test
+  void acceptsVolcengineTemporaryDashboardOnlyForItsSelectedInstance() {
+    String prefix = "https://test.flink.volces.com/login-server/ui/s-101-rest.pool:8081/";
+    String signed = prefix + "?open-platform-token=fixture";
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl(signed, "s-101")).isEqualTo(signed);
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl(signed, "s-102")).isNull();
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl(prefix, "s-101")).isNull();
+    assertThat(VolcengineManagedFlinkProvider.dashboardUrl(signed + "&next=elsewhere", "s-101"))
+        .isNull();
+    assertThat(
+            VolcengineManagedFlinkProvider.dashboardUrl(
+                signed.replace(".volces.com", ".volces.com.invalid"), "s-101"))
         .isNull();
   }
 
@@ -284,6 +317,8 @@ class VolcengineInstanceHistoryTest {
     private final Context context;
     private final VolcengineManagedFlinkProvider provider;
     private final List<Integer> requestedPages = new ArrayList<>();
+    private String missingJob;
+    private boolean missingRequestId;
 
     Fixture(IntFunction<JsonObject> responses) {
       this(responses, null, 0, 0, null);
@@ -324,6 +359,25 @@ class VolcengineInstanceHistoryTest {
                                 + "{\"Id\":\"32\",\"ProjectId\":\"project\",\"AppDraftId\":\"other\",\"JobName\":\"audit-foreign\",\"DeployRequest\":{\"Queue\":\"pool\"}}]}");
                     break;
                   case "GetGWSApplication":
+                    if (missingJob != null) {
+                      JsonObject metadata = new JsonObject();
+                      if (!missingRequestId) {
+                        metadata.addProperty("RequestId", "fixture");
+                      }
+                      JsonObject error = new JsonObject();
+                      error.addProperty("Code", "default system error");
+                      error.addProperty("Message", "Can't find application with id: " + missingJob);
+                      metadata.add("Error", error);
+                      JsonObject envelope = new JsonObject();
+                      envelope.add("ResponseMetadata", metadata);
+                      return response
+                          .code(200)
+                          .message("OK")
+                          .body(
+                              ResponseBody.create(
+                                  MediaType.parse("application/json"), envelope.toString()))
+                          .build();
+                    }
                     result =
                         json(
                             "{\"Id\":\"31\",\"ProjectId\":\"project\",\"AppDraftId\":\"draft\","

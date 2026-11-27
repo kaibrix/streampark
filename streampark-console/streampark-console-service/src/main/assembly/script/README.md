@@ -59,17 +59,40 @@ account, project, directory and resource pool. Its deployment profile controls
 SQL and JAR submission, snapshots, metrics and log access. Check the environment
 capabilities in the Console before using each operation.
 
+To enable lifecycle actions with credentials entered by a team administrator, set
+`streampark.managed-flink.volcengine.team-credential-lifecycle-enabled` to
+`true` and enable the corresponding lifecycle capabilities. The configured
+team, account, project, directory, pool and engine must match the environment.
+The adapter verifies the cloud account before each write. Configure additional
+pools in the same project with
+`streampark.managed-flink.volcengine.additional-pools` using comma-separated
+`pool-id=pool-name` pairs. Keep the original pool bound while a published
+release still uses it.
+
 Use one writer for each managed cloud job. Coordinate cloud-console edits with
 StreamPark operations. The public deploy call addresses a draft by ID. Native
 restart and savepoint creation address a job by ID. An external change between
 the preflight read and the write can change which revision or instance receives
 the operation.
 
+Enable `streampark.managed-flink.volcengine.native-stop-with-savepoint-enabled`
+after validating native stop with savepoint on the bound test project and engine.
+The Console confirms both the target instance's stop and its new available
+savepoint. The action and the separate snapshot-then-stop flow both require
+`app:cancel` and `savepoint:trigger`. Refresh the instance details to retrieve
+its current Flink UI link when Volcengine supplies an approved HTTPS URL.
+
+To import an existing TOS JAR, give the Console profile read access to the
+configured artifact bucket and prefix. Import captures the JAR under its
+digest. Publication stages that immutable content for the Flink runtime.
+
 If a write loses its response, retain the StreamPark operation ID and use
-**Refresh evidence** on that operation. Confirmation requires a matching
-provider receipt or unambiguous cloud evidence. An ambiguous write stays in
-`VERIFY_REQUIRED` to prevent duplicate dispatch. Capture the cloud job and
-instance history when investigating it.
+**Refresh evidence** on that operation. If it confirms an intermediate step,
+an operator authorized for the original command can select **Continue**.
+For a lost draft creation response, an authorized operator can provide the
+cloud draft ID and a cloud audit reference for readback. An ambiguous write
+stays in `VERIFY_REQUIRED`. Capture the cloud job and instance history when
+investigating it.
 
 Grant `app:log` to team members authorized to read text emitted by the job.
 The application controls that text and should keep credentials out of its logs.

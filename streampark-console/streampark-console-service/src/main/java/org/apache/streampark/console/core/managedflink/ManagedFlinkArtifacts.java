@@ -19,6 +19,7 @@ package org.apache.streampark.console.core.managedflink;
 
 import org.apache.streampark.console.core.entity.Project;
 import org.apache.streampark.console.core.enums.BuildState;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.service.ProjectService;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +40,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
+import java.util.Map;
 import java.util.Objects;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
@@ -76,6 +78,18 @@ class ManagedFlinkArtifacts {
 
   String upload(long team, long app, MultipartFile file) throws IOException {
     return capture(team, app, file.getSize(), file::getInputStream, () -> {});
+  }
+
+  String importCloud(long team, long app, String uri) throws IOException {
+    catalog.authorize(team, "app:update");
+    Map<String, Object> job = jobs.job(team, app, false);
+    Map<String, Object> environment = catalog.environment(team, text(job, "environment_id"), false);
+    Map<String, Object> connection = catalog.connection(team, text(environment, "connection_id"));
+    Context context = catalog.context(connection, environment, null);
+    return catalog
+        .provider(text(connection, "provider"))
+        .importArtifact(
+            context, uri, (size, input) -> capture(team, app, size, () -> input, () -> {}));
   }
 
   String importBuild(long team, long app, long projectId, String module, String jar)

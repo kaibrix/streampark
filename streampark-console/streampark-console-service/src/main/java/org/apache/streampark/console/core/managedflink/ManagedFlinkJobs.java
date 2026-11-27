@@ -21,6 +21,7 @@ import org.apache.streampark.common.enums.ApplicationType;
 import org.apache.streampark.common.enums.DevelopmentMode;
 import org.apache.streampark.common.enums.ExecutionMode;
 import org.apache.streampark.console.core.entity.Application;
+import org.apache.streampark.console.core.entity.FlinkSql;
 import org.apache.streampark.console.core.enums.FlinkAppState;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Action;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CloudState;
@@ -31,15 +32,21 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Frozen
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.LogQuery;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationResolution;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ResolutionAudit;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ResolutionDecision;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Restore;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
 import org.apache.streampark.console.core.service.ApplicationService;
+import org.apache.streampark.console.core.service.FlinkSqlService;
 
 import org.apache.commons.lang3.StringUtils;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -68,10 +75,23 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 @Service
 public class ManagedFlinkJobs {
 
+  private static final List<String> PORTABLE_SETTINGS =
+      Arrays.asList(
+          "parallelism.default",
+          "execution.checkpointing.interval",
+          "execution.checkpointing.timeout",
+          "taskmanager.numberOfTaskSlots",
+          "kubernetes.jobmanager.cpu",
+          "kubernetes.taskmanager.cpu",
+          "jobmanager.memory.process.size",
+          "taskmanager.memory.process.size",
+          "args.base64.enabled");
+
   private final ManagedFlinkStore store;
   private final ManagedFlinkCatalog catalog;
   private final ApplicationService applications;
   private final TransactionTemplate transactions;
+  @Autowired private FlinkSqlService flinkSql;
 
   ManagedFlinkJobs(
       ManagedFlinkStore store,
@@ -139,6 +159,42 @@ public class ManagedFlinkJobs {
             store.encode(input.getSpec()),
             catalog.scope(conn, env));
     return app.getId();
+  }
+
+  public Spec copySpec(long team, long app) {
+    catalog.authorize(team, "app:view", "app:detail", "app:create");
+    Application source = applications.getById(app);
+    check(
+        source != null && Objects.equals(source.getTeamId(), team),
+        HttpStatus.NOT_FOUND,
+        "Source Flink job not found");
+    if (source.isManagedFlinkJob()) {
+      Spec portable = store.decode(text(job(team, app, false), "draft_spec"), Spec.class);
+      portable.setArtifactId(null);
+      portable.setUdfArtifactId(null);
+      portable.getDependencyIds().clear();
+      portable.setPriority(null);
+      portable.setSchedulePolicy(null);
+      portable.setScheduleTimeout(null);
+      portable
+          .getConfiguration()
+          .keySet()
+          .removeIf(
+              key ->
+                  !PORTABLE_SETTINGS.contains(key)
+                      && !VolcengineExecutable.RESTART_SETTINGS.contains(key));
+      return portable;
+    }
+    Spec portable = new Spec();
+    portable.setType(source.isFlinkSqlJob() ? JobType.SQL : JobType.JAR);
+    if (source.isFlinkSqlJob()) {
+      FlinkSql sql = flinkSql.getLatestFlinkSql(app, true);
+      check(sql != null, HttpStatus.CONFLICT, "Source job has no saved SQL");
+      portable.setSql(sql.getSql());
+    } else {
+      portable.setMainClass(source.getMainClass());
+    }
+    return portable;
   }
 
   @Transactional
@@ -408,6 +464,9 @@ public class ManagedFlinkJobs {
     }
     String operation = id();
     long now = System.currentTimeMillis();
+    boolean savesState =
+        frozen.getActions().contains(Action.SNAPSHOT)
+            || frozen.getActions().contains(Action.STOP_WITH_SAVEPOINT);
     store
         .jdbc()
         .update(
@@ -422,7 +481,7 @@ public class ManagedFlinkJobs {
             type.name(),
             store.encode(frozen),
             release,
-            now + (frozen.getActions().contains(Action.SNAPSHOT) ? 15 : 5) * 60_000L,
+            now + (savesState ? 15 : 5) * 60_000L,
             now,
             actor,
             now,
@@ -432,6 +491,111 @@ public class ManagedFlinkJobs {
         .update(
             "update t_flink_managed_job set pending_operation_id=? where app_id=?", operation, app);
     return operation;
+  }
+
+  public void reviewOperation(long team, long app, String id, OperationResolution resolution) {
+    catalog.authorize(team, "app:detail");
+    Map<String, Object> job = job(team, app, false);
+    Map<String, Object> operation =
+        store.require(
+            "select * from t_flink_managed_operation where team_id=? and app_id=? and id=?",
+            team,
+            app,
+            id);
+    check(
+        "VERIFY_REQUIRED".equals(text(operation, "status"))
+            && id.equals(text(job, "pending_operation_id")),
+        HttpStatus.CONFLICT,
+        "Operation is not awaiting review");
+    int index = (int) number(operation, "step_index");
+    long version = number(operation, "updated_at");
+    Map<String, Object> step =
+        store.require(
+            "select action,state,result from t_flink_managed_operation_step where operation_id=? and step_index=?",
+            id,
+            index);
+    boolean confirmed = "CONFIRMED".equals(text(step, "state"));
+    FrozenCommand command = store.decode(text(operation, "command"), FrozenCommand.class);
+    ResolutionDecision decision = resolution == null ? null : resolution.getDecision();
+    boolean resume = decision == ResolutionDecision.CONTINUE;
+    long now = System.currentTimeMillis();
+    if (resolution != null) {
+      check(decision != null, HttpStatus.BAD_REQUEST, "A resolution decision is required");
+      check(
+          Objects.equals(resolution.getExpectedStepIndex(), index)
+              && Objects.equals(resolution.getExpectedUpdatedAt(), version),
+          HttpStatus.CONFLICT,
+          "Operation changed during review");
+      CommandType type = CommandType.valueOf(text(operation, "command_type"));
+      long actor = authorizeResolution(team, type, command);
+      ResolutionAudit audit = new ResolutionAudit();
+      audit.setDecision(decision);
+      audit.setStepIndex(index);
+      audit.setActor(actor);
+      audit.setReviewedAt(now);
+      if (resume) {
+        check(
+            confirmed && index + 1 < command.getActions().size(),
+            HttpStatus.CONFLICT,
+            "The current step must be confirmed before continuing");
+      } else {
+        check(
+            !confirmed && "CREATE_DRAFT".equals(text(step, "action")),
+            HttpStatus.CONFLICT,
+            "Only an unresolved create-draft step accepts a draft reference");
+        String draftId = required(resolution.getDraftId(), 191);
+        String reference = required(resolution.getEvidenceReference(), 191);
+        check(
+            draftId.matches("[A-Za-z0-9_.-]+") && reference.matches("[A-Za-z0-9_.-]+"),
+            HttpStatus.BAD_REQUEST,
+            "Expected a provider draft ID and an audit reference");
+        String result = text(step, "result");
+        if (result != null) {
+          String acknowledgedDraft = store.decode(result, Observation.class).getDraftId();
+          check(
+              acknowledgedDraft == null || draftId.equals(acknowledgedDraft),
+              HttpStatus.CONFLICT,
+              "Draft reference conflicts with the recorded provider receipt");
+        }
+        audit.setDraftId(draftId);
+        audit.setEvidenceReference(reference);
+      }
+      command.getReviewHistory().add(audit);
+    } else {
+      check(!confirmed, HttpStatus.CONFLICT, "The current step is already confirmed");
+    }
+    command.setReconcileOnly(!resume);
+    int count =
+        store
+            .jdbc()
+            .update(
+                "update t_flink_managed_operation set status=?,command=?,step_index=?,"
+                    + "deadline_at=?,next_run_at=?,updated_at=? where id=? and team_id=? and app_id=? "
+                    + "and status='VERIFY_REQUIRED' and step_index=? and updated_at=?",
+                resume ? "PENDING" : "WAITING_PROVIDER",
+                store.encode(command),
+                resume ? index + 1 : index,
+                now + 300_000,
+                now,
+                now,
+                id,
+                team,
+                app,
+                index,
+                version);
+    check(count == 1, HttpStatus.CONFLICT, "Operation changed during review");
+  }
+
+  private long authorizeResolution(long team, CommandType type, FrozenCommand command) {
+    long actor = catalog.authorize(team, permission(type));
+    if (type == CommandType.SUBMIT) {
+      catalog.authorize(team, "app:start", "app:create");
+    } else if (type == CommandType.RESTART) {
+      catalog.authorize(team, "app:cancel");
+    } else if (type == CommandType.STOP && command.getActions().contains(Action.SNAPSHOT)) {
+      catalog.authorize(team, "savepoint:trigger");
+    }
+    return actor;
   }
 
   private String freezeRelease(
@@ -592,24 +756,25 @@ public class ManagedFlinkJobs {
               "select * from t_flink_managed_snapshot where app_id=? and id=?",
               app,
               restore.getSnapshotId());
+      Map<String, Object> source =
+          store.find(
+              "select spec_hash from t_flink_managed_release where app_id=? and id=? and status='PUBLISHED'",
+              app,
+              text(snapshot, "release_id"));
       check(
           bool(snapshot, "restorable")
               && "AVAILABLE".equals(text(snapshot, "state"))
-              && Objects.equals(release, text(snapshot, "release_id")),
+              && source != null
+              && text(version, "spec_hash").equals(text(source, "spec_hash")),
           HttpStatus.UNPROCESSABLE_ENTITY,
           "Snapshot is unavailable or incompatible");
       frozen.setRestoreRef(required(text(snapshot, "restore_ref"), 191));
     } else {
       capability(capabilities, "RESTORE_FROM_LATEST");
-      Map<String, Object> latest =
-          store.find(
-              "select restore_ref from t_flink_managed_snapshot "
-                  + "where app_id=? and release_id=? and restorable=true and state='AVAILABLE' "
-                  + "order by created_at desc, id desc limit 1",
-              app,
-              release);
-      check(latest != null, HttpStatus.UNPROCESSABLE_ENTITY, "No compatible latest snapshot");
-      frozen.setRestoreRef(required(text(latest, "restore_ref"), 191));
+      List<Map<String, Object>> compatible = compatibleSnapshots(app, version, 1);
+      check(
+          !compatible.isEmpty(), HttpStatus.UNPROCESSABLE_ENTITY, "No compatible latest snapshot");
+      frozen.setRestoreRef(required(text(compatible.get(0), "restore_ref"), 191));
     }
     frozen.setSpec(store.decode(text(version, "spec"), Spec.class));
     frozen.setReleaseMarker(release);
@@ -646,6 +811,33 @@ public class ManagedFlinkJobs {
             : Collections.singletonList(Action.START));
   }
 
+  List<Map<String, Object>> restoreOptions(long app, String releaseId) {
+    if (releaseId == null) {
+      return Collections.emptyList();
+    }
+    List<Map<String, Object>> options = compatibleSnapshots(app, release(app, releaseId), 100);
+    options.forEach(option -> option.remove("restore_ref"));
+    return options;
+  }
+
+  private List<Map<String, Object>> compatibleSnapshots(
+      long app, Map<String, Object> version, int limit) {
+    // A rollback creates a new release ID. Only exact frozen specifications of this same
+    // job are automatically compatible, and the provider still checks physical availability.
+    return store
+        .jdbc()
+        .queryForList(
+            "select s.id,s.run_id,s.release_id,s.created_at,s.state,s.restorable,s.restore_ref "
+                + "from t_flink_managed_snapshot s join t_flink_managed_release r "
+                + "on r.app_id=s.app_id and r.id=s.release_id "
+                + "where s.app_id=? and s.restorable=true and s.state='AVAILABLE' "
+                + "and r.status='PUBLISHED' and r.spec_hash=? "
+                + "order by s.created_at desc,s.id desc limit ?",
+            app,
+            text(version, "spec_hash"),
+            limit);
+  }
+
   private void prepareRunAction(
       long team,
       CommandType type,
@@ -661,6 +853,10 @@ public class ManagedFlinkJobs {
     if (type == CommandType.SNAPSHOT) {
       capability(capabilities, "SNAPSHOT");
       frozen.setActions(Collections.singletonList(Action.SNAPSHOT));
+    } else if ("WITH_SAVEPOINT".equals(cmd.getMode())) {
+      catalog.authorize(team, "savepoint:trigger");
+      capability(capabilities, "STOP_WITH_SAVEPOINT");
+      frozen.setActions(Collections.singletonList(Action.STOP_WITH_SAVEPOINT));
     } else if ("AFTER_SNAPSHOT".equals(cmd.getMode())) {
       catalog.authorize(team, "savepoint:trigger");
       capability(capabilities, "SNAPSHOT_THEN_STOP");

@@ -58,15 +58,38 @@ export interface Environment {
   name: string;
   region: string;
   provider: string;
+  connectionId: string;
   configVersion: number;
   enabled: boolean | number;
+  capabilitiesObservedAt?: number | string;
   target: string;
+}
+
+export interface Connection {
+  id: string;
+  name: string;
+  provider: string;
+  accountRef: string;
+  credentialVersion: number;
+  credentialsManagedByServer: boolean | number;
 }
 
 export interface Operation {
   id: string;
   command_type: string;
   status: string;
+  step_index?: number | string;
+  updated_at?: number | string;
+  canContinue?: boolean;
+  canConfirmDraft?: boolean;
+  reviewHistory?: {
+    decision: 'CONTINUE' | 'CONFIRM_DRAFT';
+    stepIndex: number;
+    actor: number | string;
+    reviewedAt: number | string;
+    draftId?: string;
+    evidenceReference?: string;
+  }[];
   steps?: {
     step_index: number;
     action: string;
@@ -102,6 +125,7 @@ export type Capabilities = Record<string, string>;
 
 const base = '/flink/managed';
 const quiet = { handleErrorsLocally: true, errorMessageMode: 'none' as const, formatDate: false };
+export const catalogPageSize = 100;
 
 export function managedGet<T>(
   path: string,
@@ -113,8 +137,19 @@ export function managedGet<T>(
   );
 }
 
+export async function readManagedCatalog<T>(path: string, firstPage?: T[]) {
+  let page = firstPage ?? (await managedGet<T[]>(path));
+  const entries = [...page];
+  while (page.length === catalogPageSize) {
+    page = await managedGet<T[]>(path, { offset: entries.length });
+    entries.push(...page);
+  }
+  return entries;
+}
+
 export function managedPost<T>(path: string, data: Record<string, unknown>, key?: string) {
-  const url = base + path + '?teamId=' + encodeURIComponent(getUserTeamId() || '');
+  const separator = path.includes('?') ? '&' : '?';
+  const url = base + path + separator + 'teamId=' + encodeURIComponent(getUserTeamId() || '');
   return defHttp.postJson<T>(
     { url, data, headers: key ? { 'Idempotency-Key': key } : undefined },
     quiet,
@@ -141,4 +176,10 @@ export async function uploadManagedJar(app: string, file: File) {
     },
     quiet,
   );
+}
+
+export function importManagedCloudJar(app: string, uri: string) {
+  const url =
+    base + '/apps/' + app + '/artifacts/cloud?teamId=' + encodeURIComponent(getUserTeamId() || '');
+  return defHttp.postJson<string>({ url, data: { uri }, timeout: 600_000 }, quiet);
 }

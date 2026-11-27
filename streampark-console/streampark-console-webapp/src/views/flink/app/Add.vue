@@ -17,9 +17,10 @@
 <script setup lang="ts" name="AppCreate">
   import { useGo } from '/@/hooks/web/usePage';
   import ManagedCreate from './components/ManagedFlink/ManagedCreate.vue';
+  import { useRoute } from 'vue-router';
   import ProgramArgs from './components/ProgramArgs.vue';
   import { Switch, Alert } from 'ant-design-vue';
-  import { onMounted, reactive, ref, unref } from 'vue';
+  import { computed, onMounted, reactive, ref, unref } from 'vue';
   import { PageWrapper } from '/@/components/Page';
   import { createAsyncComponent } from '/@/utils/factory/createAsyncComponent';
 
@@ -58,6 +59,12 @@
   });
 
   const go = useGo();
+  const route = useRoute();
+  const copyFrom = computed(() =>
+    typeof route.query.copyFrom === 'string' && /^[1-9][0-9]{0,18}$/.test(route.query.copyFrom)
+      ? route.query.copyFrom
+      : undefined,
+  );
   const flinkSql = ref();
   const dependencyRef = ref();
   const uploadLoading = ref(false);
@@ -300,14 +307,19 @@
   }
 
   onMounted(async () => {
-    handleInitForm();
+    if (!copyFrom.value) handleInitForm();
   });
 </script>
 
 <template>
   <PageWrapper contentFullHeight contentBackground contentClass="p-26px app_controller">
-    <ManagedCreate />
-    <BasicForm @register="registerAppForm" @submit="handleAppCreate" :schemas="getCreateFormSchema">
+    <ManagedCreate :key="copyFrom || 'create'" :copy-from="copyFrom" />
+    <BasicForm
+      v-if="!copyFrom"
+      @register="registerAppForm"
+      @submit="handleAppCreate"
+      :schemas="getCreateFormSchema"
+    >
       <template #flinkSql="{ model, field }">
         <FlinkSqlEditor
           ref="flinkSql"

@@ -61,6 +61,7 @@ public final class ManagedFlinkModels {
     PUBLISH,
     START,
     STOP,
+    STOP_WITH_SAVEPOINT,
     SNAPSHOT
   }
 
@@ -70,6 +71,30 @@ public final class ManagedFlinkModels {
     FROM_CLOUD_LATEST,
     FROM_CLOUD_SNAPSHOT,
     FROM_SNAPSHOT
+  }
+
+  public enum ResolutionDecision {
+    CONFIRM_DRAFT,
+    CONTINUE
+  }
+
+  @Data
+  public static class OperationResolution {
+    private ResolutionDecision decision;
+    private Integer expectedStepIndex;
+    private Long expectedUpdatedAt;
+    private String draftId;
+    private String evidenceReference;
+  }
+
+  @Data
+  public static class ResolutionAudit {
+    private ResolutionDecision decision;
+    private int stepIndex;
+    private long actor;
+    private long reviewedAt;
+    private String draftId;
+    private String evidenceReference;
   }
 
   public enum Outcome {
@@ -226,6 +251,10 @@ public final class ManagedFlinkModels {
     private String providerInstance;
     // An empty baseline denotes a verified empty history before the cloud write.
     private String instanceBeforeDispatch;
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private List<String> savepointsBeforeStop;
+
     private String restoreRef;
     private String artifactRef;
     private String artifactDigest;
@@ -235,6 +264,12 @@ public final class ManagedFlinkModels {
     private List<DependencyArtifact> dependencies = new ArrayList<>();
 
     private String releaseMarker;
+
+    @JsonInclude(JsonInclude.Include.NON_DEFAULT)
+    private boolean reconcileOnly;
+
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private List<ResolutionAudit> reviewHistory = new ArrayList<>();
   }
 
   @Data
@@ -288,6 +323,8 @@ public final class ManagedFlinkModels {
     // Set only for the individual dependency currently being staged.
     private DependencyArtifact dependency;
     private long dispatchedAt;
+    private String draftFingerprint;
+    private OperationStep previousDraftUpdate;
   }
 
   public enum ReadStatus {
@@ -351,6 +388,7 @@ public final class ManagedFlinkModels {
     private String requestId;
     private String code;
     private String draftId;
+    private String draftFingerprint;
     private String jobId;
     private String version;
     private String remoteVersionId;

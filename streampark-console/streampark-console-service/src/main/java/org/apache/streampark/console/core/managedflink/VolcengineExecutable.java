@@ -203,7 +203,7 @@ final class VolcengineExecutable {
   }
 
   static boolean matches(JsonObject remote, OperationStep step, boolean draft) {
-    if (remote == null || step.getCommand().getReleaseMarker() == null) {
+    if (remote == null || step == null || step.getCommand().getReleaseMarker() == null) {
       return false;
     }
     Spec spec = step.getCommand().getSpec();
@@ -259,6 +259,56 @@ final class VolcengineExecutable {
       }
     }
     return jars.isEmpty() ? empty(jarList) : expected.equals(jarList);
+  }
+
+  static String draftFingerprint(JsonObject draft) {
+    JsonObject signature = new JsonObject();
+    for (String field :
+        Arrays.asList(
+            "Id",
+            "ProjectId",
+            "DirectoryId",
+            "JobName",
+            "JobType",
+            "EngineVersion",
+            "SqlText",
+            "Jar",
+            "MainClass",
+            "Args")) {
+      String value = text(draft, field);
+      if (value != null) {
+        signature.addProperty(field, value);
+      }
+    }
+    for (String field : Arrays.asList("MainArgs", "Options", "DynamicOptions", "Dependency")) {
+      JsonElement value = draft.get(field);
+      if (value != null && !value.isJsonNull()) {
+        if (value.isJsonPrimitive() && value.getAsString().trim().startsWith("{")) {
+          value = JsonParser.parseString(value.getAsString());
+        }
+        signature.add(field, canonicalJson(value));
+      }
+    }
+    return ManagedFlinkStore.hash(signature.toString());
+  }
+
+  private static JsonElement canonicalJson(JsonElement value) {
+    if (value.isJsonObject()) {
+      Map<String, JsonElement> sorted = new TreeMap<>();
+      value
+          .getAsJsonObject()
+          .entrySet()
+          .forEach(entry -> sorted.put(entry.getKey(), entry.getValue()));
+      JsonObject result = new JsonObject();
+      sorted.forEach((key, entry) -> result.add(key, canonicalJson(entry)));
+      return result;
+    }
+    if (value.isJsonArray()) {
+      JsonArray result = new JsonArray();
+      value.getAsJsonArray().forEach(entry -> result.add(canonicalJson(entry)));
+      return result;
+    }
+    return value;
   }
 
   static String revision(JsonObject remote) {

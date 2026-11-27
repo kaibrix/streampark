@@ -19,7 +19,6 @@
     Alert,
     Button,
     Card,
-    Collapse,
     Form,
     Input,
     List,
@@ -28,24 +27,30 @@
     Select,
     Space,
   } from 'ant-design-vue';
-  import { computed, onMounted, reactive, ref, watch } from 'vue';
+  import { computed, onMounted, reactive, ref } from 'vue';
   import { useI18n } from '/@/hooks/web/useI18n';
   import { useRouter } from 'vue-router';
-  import { managedGet, managedPost, type Environment, type Spec } from '/@/api/flink/managedFlink';
+  import {
+    catalogPageSize,
+    managedGet,
+    managedPost,
+    readManagedCatalog,
+    type Environment,
+    type Spec,
+  } from '/@/api/flink/managedFlink';
   import { format } from '../../FlinkSqlFormatter';
+  import ManagedSettings from './ManagedSettings.vue';
 
-  const catalogPageSize = 100;
-  const CollapsePanel = Collapse.Panel;
   const FormItem = Form.Item;
-  const InputPassword = Input.Password;
   const RadioGroup = Radio.Group;
   const Textarea = Input.TextArea;
+  const props = defineProps<{ copyFrom?: string }>();
 
   const { t } = useI18n();
   const router = useRouter();
-  const visible = ref(false);
+  const visible = ref(Boolean(props.copyFrom));
+  const copiedSpec = ref<Spec>();
   const settings = ref(false);
-  const providers = ref<string[]>([]);
   const showCloudJobs = ref(false);
   const cloudFilter = ref('');
   const inventory = ref<{
@@ -65,12 +70,10 @@
       });
     });
   }
-  const available = ref(false);
+  const available = ref(Boolean(props.copyFrom));
   const busy = ref(false);
   const message = ref('');
   const environments = ref<Environment[]>([]);
-  type Connection = { id: string; name: string };
-  const connections = ref<Connection[]>([]);
   const job = reactive({
     name: '',
     environmentId: '',
@@ -86,50 +89,30 @@
       isVolcengine.value &&
       !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,46}[A-Za-z0-9])?$/.test(job.name.trim()),
   );
-  const connection = reactive({
-    name: '',
-    provider: 'volcengine',
-    accountRef: '',
-    accessKey: '',
-    secretKey: '',
-  });
-  const environment = reactive({
-    name: '',
-    connectionId: '',
-    region: '',
-    target: {
-      projectId: '',
-      directoryId: '',
-      resourcePoolId: '',
-      resourcePoolName: '',
-      engineRef: '',
-      artifactBucket: '',
-      artifactPrefix: '',
-      tlsTopic: '',
-      tlsRegion: '',
-    },
-  });
-
-  async function readCatalog<T>(path: string, firstPage?: T[]) {
-    let page = firstPage ?? (await managedGet<T[]>(path));
-    const entries = [...page];
-    while (page.length === catalogPageSize) {
-      page = await managedGet<T[]>(path, { offset: entries.length });
-      entries.push(...page);
-    }
-    return entries;
-  }
-
   function showCreate() {
     visible.value = true;
     if (environments.value.length === catalogPageSize) {
       void run(async () => {
-        environments.value = await readCatalog('/environments', environments.value);
+        environments.value = await readManagedCatalog('/environments', environments.value);
       });
     }
   }
 
   onMounted(async () => {
+    if (props.copyFrom) {
+      await run(async () => {
+        const [entries, spec] = await Promise.all([
+          readManagedCatalog<Environment>('/environments'),
+          managedGet<Spec>(`/apps/${props.copyFrom}/copy-spec`),
+        ]);
+        environments.value = entries;
+        copiedSpec.value = spec;
+        job.type = spec.type;
+        job.batchMode = Boolean(spec.batchMode);
+        job.sql = spec.sql || '';
+      });
+      return;
+    }
     try {
       environments.value = await managedGet<Environment[]>('/environments');
       available.value = true;
@@ -150,47 +133,12 @@
     }
   }
 
-  watch([settings, () => connection.provider], () => {
-    connection.accessKey = '';
-    connection.secretKey = '';
-  });
-
-  function showSettings() {
-    void run(async () => {
-      [connections.value, providers.value] = await Promise.all([
-        readCatalog<Connection>('/connections'),
-        managedGet<string[]>('/providers'),
-      ]);
-      settings.value = true;
-    });
-  }
-
-  function addConnection() {
-    void run(async () => {
-      const credentials =
-        connection.provider === 'volcengine' && (connection.accessKey || connection.secretKey)
-          ? { accessKey: connection.accessKey, secretKey: connection.secretKey }
-          : {};
-      const id = await managedPost<string>('/connections', {
-        name: connection.name,
-        provider: connection.provider,
-        accountRef: connection.accountRef,
-        ...credentials,
-      });
-      connection.accessKey = '';
-      connection.secretKey = '';
-      connections.value = await readCatalog<Connection>('/connections');
-      environment.connectionId = id;
-    });
-  }
-
-  function addEnvironment() {
-    void run(async () => {
-      const id = await managedPost<string>('/environments', { ...environment });
-      environments.value = await readCatalog<Environment>('/environments');
-      job.environmentId = id;
-      await probe(id);
-    });
+  function updateEnvironments(entries: Environment[], selectedId?: string) {
+    environments.value = entries;
+    const selection = selectedId || job.environmentId;
+    job.environmentId = entries.some(({ id, enabled }) => id === selection && enabled)
+      ? selection
+      : '';
   }
 
   async function probe(id: string) {
@@ -201,9 +149,11 @@
   }
 
   function create() {
-    if (invalidVolcengineName.value) return;
+    if (invalidVolcengineName.value || (props.copyFrom && !copiedSpec.value)) return;
     void run(async () => {
-      const spec: Spec = { type: job.type, args: [], configuration: {} };
+      const spec: Spec = copiedSpec.value
+        ? { ...copiedSpec.value }
+        : { type: job.type, args: [], configuration: {} };
       if (job.batchMode) spec.batchMode = true;
       if (job.type === 'SQL') spec.sql = job.sql;
       const appId = await managedPost<string>('/apps', {
@@ -214,13 +164,27 @@
       await router.push({ path: '/flink/app/detail', query: { appId } });
     });
   }
+
+  function cancelCreate() {
+    if (props.copyFrom) {
+      void router.push({ path: '/flink/app' });
+    } else {
+      visible.value = false;
+    }
+  }
 </script>
 
 <template>
   <div v-if="available" class="mb-4">
     <Button v-if="!visible" @click="showCreate">{{ t('managedFlink.create') }}</Button>
-    <Card v-else :title="t('managedFlink.create')">
+    <Card v-else :title="t(copyFrom ? 'managedFlink.copyAsManaged' : 'managedFlink.create')">
       <Alert v-if="message" class="mb-4" :message="message" show-icon />
+      <Alert
+        v-if="copyFrom && copiedSpec"
+        class="mb-4"
+        :message="t('managedFlink.copyArtifactNote')"
+        show-icon
+      />
       <Form :model="job" layout="vertical" @finish="create">
         <FormItem
           :label="t('managedFlink.name')"
@@ -243,11 +207,12 @@
           />
         </FormItem>
         <FormItem :label="t('managedFlink.type')">
-          <RadioGroup v-model:value="job.type" :options="['SQL', 'JAR']" />
+          <RadioGroup v-model:value="job.type" :options="['SQL', 'JAR']" :disabled="!!copyFrom" />
         </FormItem>
         <FormItem :label="t('managedFlink.processingMode')">
           <RadioGroup
             v-model:value="job.batchMode"
+            :disabled="!!copyFrom"
             :options="[
               { value: false, label: t('managedFlink.streaming') },
               { value: true, label: t('managedFlink.batch') },
@@ -265,7 +230,12 @@
             type="primary"
             html-type="submit"
             :loading="busy"
-            :disabled="!job.name.trim() || !job.environmentId || invalidVolcengineName"
+            :disabled="
+              !job.name.trim() ||
+              !job.environmentId ||
+              invalidVolcengineName ||
+              (!!copyFrom && !copiedSpec)
+            "
           >
             {{ t('managedFlink.save') }}
           </Button>
@@ -283,10 +253,10 @@
             @click="listCloudJobs()"
             >{{ t('managedFlink.cloudJobs') }}</Button
           >
-          <Button v-auth="'team:update'" :disabled="busy" @click="showSettings">{{
+          <Button v-auth="'team:update'" :disabled="busy" @click="settings = true">{{
             t('managedFlink.settings')
           }}</Button>
-          <Button @click="visible = false">{{ t('common.cancelText') }}</Button>
+          <Button @click="cancelCreate">{{ t('common.cancelText') }}</Button>
         </Space>
       </Form>
     </Card>
@@ -324,64 +294,6 @@
         </Space>
       </template>
     </Modal>
-    <Modal
-      v-model:visible="settings"
-      :title="t('managedFlink.settings')"
-      :footer="null"
-      width="680px"
-    >
-      <Alert v-if="message" class="mb-4" :message="message" />
-      <Collapse>
-        <CollapsePanel key="connection" :header="t('managedFlink.connection')">
-          <Form :model="connection" layout="vertical" @finish="addConnection">
-            <FormItem :label="t('managedFlink.name')"
-              ><Input v-model:value="connection.name"
-            /></FormItem>
-            <FormItem :label="t('managedFlink.provider')">
-              <Select
-                v-model:value="connection.provider"
-                :options="providers.map((value) => ({ value }))"
-              />
-            </FormItem>
-            <FormItem :label="t('managedFlink.account')"
-              ><Input v-model:value="connection.accountRef"
-            /></FormItem>
-            <template v-if="connection.provider === 'volcengine'">
-              <FormItem label="Access Key"
-                ><InputPassword v-model:value="connection.accessKey" autocomplete="off"
-              /></FormItem>
-              <FormItem label="Secret Key"
-                ><InputPassword v-model:value="connection.secretKey" autocomplete="off"
-              /></FormItem>
-            </template>
-            <Button html-type="submit" :loading="busy">{{ t('managedFlink.connection') }}</Button>
-          </Form>
-        </CollapsePanel>
-        <CollapsePanel key="environment" :header="t('managedFlink.environment')">
-          <Form :model="environment" layout="vertical" @finish="addEnvironment">
-            <FormItem :label="t('managedFlink.name')"
-              ><Input v-model:value="environment.name"
-            /></FormItem>
-            <FormItem :label="t('managedFlink.connection')">
-              <Select
-                v-model:value="environment.connectionId"
-                :options="connections.map(({ id, name }) => ({ value: id, label: name }))"
-              />
-            </FormItem>
-            <FormItem :label="t('managedFlink.region')"
-              ><Input v-model:value="environment.region"
-            /></FormItem>
-            <FormItem
-              v-for="(_, key) in environment.target"
-              :key="key"
-              :label="t('managedFlink.' + key)"
-            >
-              <Input v-model:value="environment.target[key]" />
-            </FormItem>
-            <Button html-type="submit" :loading="busy">{{ t('managedFlink.environment') }}</Button>
-          </Form>
-        </CollapsePanel>
-      </Collapse>
-    </Modal>
+    <ManagedSettings v-if="settings" @close="settings = false" @environments="updateEnvironments" />
   </div>
 </template>

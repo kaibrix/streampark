@@ -168,7 +168,8 @@ final class VolcengineOpenApi {
           requestId,
           text(error, "Code"),
           requestId != null && !requestId.isEmpty() && !meta.has("Error"),
-          retry);
+          retry,
+          text(error, "Message"));
     } catch (IOException | RuntimeException e) {
       if (status < 200 || status >= 300) {
         return new Reply(status, null, null, null, false, retry);
@@ -223,6 +224,7 @@ final class VolcengineOpenApi {
     final String errorCode;
     final boolean businessSuccess;
     final long retryNotBefore;
+    final String errorMessage;
 
     Reply(
         int status,
@@ -240,12 +242,24 @@ final class VolcengineOpenApi {
         String errorCode,
         boolean businessSuccess,
         long retryNotBefore) {
+      this(status, result, requestId, errorCode, businessSuccess, retryNotBefore, null);
+    }
+
+    Reply(
+        int status,
+        JsonElement result,
+        String requestId,
+        String errorCode,
+        boolean businessSuccess,
+        long retryNotBefore,
+        String errorMessage) {
       this.httpStatus = status;
       this.result = result;
       this.requestId = requestId;
       this.errorCode = errorCode;
       this.businessSuccess = businessSuccess;
       this.retryNotBefore = retryNotBefore;
+      this.errorMessage = errorMessage;
     }
 
     boolean ok() {
@@ -261,6 +275,17 @@ final class VolcengineOpenApi {
       }
       if (httpStatus == 503 || (!ok() && retryNotBefore != 0)) {
         throw new ReadFailure(ReadStatus.STALE, retryNotBefore);
+      }
+    }
+
+    void checkPublishedJobMissing(String id) throws ReadFailure {
+      // The Flink job detail endpoint returns this specific business error in HTTP 200.
+      if (httpStatus == 200
+          && requestId != null
+          && !requestId.isEmpty()
+          && "default system error".equals(errorCode)
+          && ("Can't find application with id: " + id).equals(errorMessage)) {
+        throw new ReadFailure(ReadStatus.MISSING, 0);
       }
     }
 

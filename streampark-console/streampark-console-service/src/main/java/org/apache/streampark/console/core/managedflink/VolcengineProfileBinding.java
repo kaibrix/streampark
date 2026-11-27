@@ -29,7 +29,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 @Component
@@ -41,9 +44,17 @@ final class VolcengineProfileBinding {
   private final String directory;
   private final String pool;
   private final String poolName;
+  private Map<String, String> additionalPools = Collections.emptyMap();
   private final List<String> engines;
   private final boolean sqlWrites;
   private final boolean snapshots;
+
+  @Value("${streampark.managed-flink.volcengine.native-stop-with-savepoint-enabled:false}")
+  private boolean nativeStopWithSavepoint;
+
+  @Value("${streampark.managed-flink.volcengine.team-credential-lifecycle-enabled:false}")
+  private boolean teamCredentialLifecycle;
+
   private final boolean artifacts;
   private final boolean diagnostics;
   private final String artifactBucket;
@@ -85,8 +96,11 @@ final class VolcengineProfileBinding {
   }
 
   boolean permitsConnection(long team, String account) {
-    return provider != null
-        && this.team > 0
+    return provider != null && matchesConnection(team, account);
+  }
+
+  private boolean matchesConnection(long team, String account) {
+    return this.team > 0
         && this.team == team
         && !this.account.isEmpty()
         && this.account.equals(account)
@@ -97,26 +111,56 @@ final class VolcengineProfileBinding {
         && engines.stream().anyMatch(value -> !value.isEmpty());
   }
 
+  @Value("${streampark.managed-flink.volcengine.additional-pools:}")
+  void setAdditionalPools(String configured) {
+    if (configured.trim().isEmpty()) {
+      return;
+    }
+    Map<String, String> parsed = new LinkedHashMap<>();
+    for (String entry : configured.split(",", -1)) {
+      String[] pair = entry.trim().split("=", 2);
+      if (pair.length != 2
+          || !pair[0].matches("[A-Za-z0-9_.-]{1,128}")
+          || pair[1].isEmpty()
+          || pair[1].length() > 128
+          || pair[1].chars().anyMatch(Character::isISOControl)
+          || parsed.putIfAbsent(pair[0], pair[1]) != null) {
+        throw new IllegalArgumentException("Invalid additional Volcengine pool binding");
+      }
+    }
+    additionalPools = Collections.unmodifiableMap(parsed);
+  }
+
   boolean permits(Context context) {
     Target t = context.getTarget();
-    return permitsConnection(context.getTeamId(), context.getAccountRef())
+    return (context.isServerCredential() ? provider != null : teamCredentialLifecycle)
+        && matchesConnection(context.getTeamId(), context.getAccountRef())
         && "cn-beijing".equals(context.getRegion())
         && Objects.equals(project, t.getProjectId())
         && Objects.equals(directory, t.getDirectoryId())
-        && Objects.equals(pool, t.getResourcePoolId())
-        && poolName.equals(t.getResourcePoolName())
+        && permitsPool(t)
         && engines.contains(t.getEngineRef());
+  }
+
+  private boolean permitsPool(Target target) {
+    String id = target.getResourcePoolId();
+    String name = target.getResourcePoolName();
+    return (pool.equals(id) && poolName.equals(name))
+        || (name != null && name.equals(additionalPools.get(id)));
   }
 
   boolean permitsSqlWrites(Context context) {
     return sqlWrites
-        && context.isServerCredential()
-        && context.getCredentials() == null
+        && (!context.isServerCredential() || context.getCredentials() == null)
         && permits(context);
   }
 
   boolean permitsSnapshots(Context context) {
     return snapshots && permitsSqlWrites(context);
+  }
+
+  boolean permitsNativeStopWithSavepoint(Context context) {
+    return nativeStopWithSavepoint && permitsSnapshots(context);
   }
 
   boolean permitsArtifacts(Context context) {

@@ -40,6 +40,7 @@ import com.squareup.okhttp.ResponseBody;
 import com.volcengine.sign.Credentials;
 import okio.Buffer;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
@@ -54,6 +55,7 @@ class VolcengineDispatchTest {
   private static final String SAVEPOINT = "fixture-savepoint";
   private static final String LAST_READ = "ListGWSSavepoint";
   private static final String START = "StartGWSApplication";
+  private static final long FIXTURE_START_MILLIS = 1704067200000L;
 
   @Test
   void transportFailuresDuringScopedReadsDoNotRequestWritePermission() {
@@ -283,6 +285,12 @@ class VolcengineDispatchTest {
     OperationStep direct = new OperationStep("direct", 2L, Action.SUBMIT, cmd, null, null, null);
     fixture.publication.remove("AppDraftId");
     fixture.directInstance = true;
+    assertThat(fixture.provider.observe(fixture.context, direct, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    direct.setDispatchedAt(FIXTURE_START_MILLIS);
+    assertThat(fixture.provider.observe(fixture.context, direct, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    direct.setDispatchedAt(FIXTURE_START_MILLIS - 1);
     Observation observed = fixture.provider.observe(fixture.context, direct, null);
     assertThat(observed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
     assertThat(observed.getInstanceId()).isEqualTo("4");
@@ -294,7 +302,7 @@ class VolcengineDispatchTest {
 
   @Test
   void publishedStartAndRestartRecoverOnlyAnUnambiguousSuccessorWithoutWriting() {
-    for (Action action : java.util.Arrays.asList(Action.START, Action.RESTART)) {
+    for (Action action : Arrays.asList(Action.START, Action.RESTART)) {
       Fixture fixture = new Fixture(null);
       FrozenCommand command = fixture.step.getCommand();
       command.getRequest().getRestore().setMode(RestoreMode.FROM_NEW);
@@ -302,7 +310,7 @@ class VolcengineDispatchTest {
       command.setInstanceBeforeDispatch("2");
       command.setProviderInstance("2");
       OperationStep step = new OperationStep("operation", 2L, action, command, "draft", "3", null);
-      step.setDispatchedAt(1704067199999L);
+      step.setDispatchedAt(FIXTURE_START_MILLIS - 1);
       fixture.directInstance = true;
       fixture.publication.addProperty("VersionId", "v1");
       fixture.publication.addProperty("ApplicationId", "runtime");
@@ -314,6 +322,15 @@ class VolcengineDispatchTest {
       Observation observed = fixture.provider.observe(fixture.context, step, null);
       assertThat(observed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
       assertThat(observed.getInstanceId()).isEqualTo("4");
+      step.setDispatchedAt(FIXTURE_START_MILLIS);
+      assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
+          .as("%s must not adopt an instance with the same start and dispatch time", action)
+          .isEqualTo(Outcome.WAITING);
+      step.setDispatchedAt(FIXTURE_START_MILLIS + 1);
+      assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
+          .as("%s must not adopt an instance that predates dispatch", action)
+          .isEqualTo(Outcome.WAITING);
+      step.setDispatchedAt(FIXTURE_START_MILLIS - 1);
       fixture.ambiguous = true;
       assertThat(fixture.provider.observe(fixture.context, step, null).getOutcome())
           .isEqualTo(Outcome.WAITING);
@@ -325,6 +342,38 @@ class VolcengineDispatchTest {
           .doesNotContain(
               "StartGWSApplication", "StartApplicationInstance", "RestartGWSApplication");
     }
+  }
+
+  @Test
+  void externallyEditedDraftIsNotOverwritten() {
+    Fixture fixture = new Fixture(null);
+    FrozenCommand command = fixture.step.getCommand();
+    command.setJobName("test-job");
+    OperationStep create =
+        new OperationStep("operation", 2L, Action.CREATE_DRAFT, command, null, null, null);
+    Observation receipt = Observation.outcome(Outcome.WAITING, null);
+    receipt.setDraftId("draft");
+    Observation confirmed = fixture.provider.observe(fixture.context, create, receipt);
+    assertThat(confirmed.getOutcome()).isEqualTo(Outcome.CONFIRMED);
+    assertThat(confirmed.getDraftFingerprint()).isNotBlank();
+
+    OperationStep update =
+        new OperationStep("operation", 2L, Action.UPDATE_DRAFT, command, "draft", null, null);
+    update.setDraftFingerprint(confirmed.getDraftFingerprint());
+    fixture.draftSql = "SELECT 'edited externally'";
+    AtomicBoolean writePermitted = new AtomicBoolean();
+    Observation result =
+        fixture.provider.dispatch(
+            fixture.context,
+            update,
+            () -> {
+              writePermitted.set(true);
+              return true;
+            });
+    assertThat(result.getOutcome()).isEqualTo(Outcome.REJECTED);
+    assertThat(result.getCode()).isEqualTo("CLOUD_DRAFT_DRIFTED");
+    assertThat(writePermitted).isFalse();
+    assertThat(fixture.actions).doesNotContain("UpdateGWSApplicationDraft");
   }
 
   @Test
@@ -340,6 +389,60 @@ class VolcengineDispatchTest {
         .isEqualTo("CLOUD_SAVEPOINT_FAILED");
   }
 
+  @Test
+  void nativeStopWaitsForAStoppedInstanceAndItsNewSavepoint() {
+    Fixture fixture = new Fixture(null);
+    ReflectionTestUtils.setField(fixture.binding, "nativeStopWithSavepoint", true);
+    fixture.publication.addProperty("ApplicationId", "s-4");
+    fixture.publication.addProperty("DeploymentId", "deployment-4");
+    fixture.directInstance = true;
+    fixture.instanceState = "RUNNING";
+    fixture.step.getCommand().setProviderInstance("4");
+    OperationStep stop =
+        new OperationStep(
+            "native-stop",
+            2L,
+            Action.STOP_WITH_SAVEPOINT,
+            fixture.step.getCommand(),
+            "draft",
+            "3",
+            null);
+    stop.setDispatchedAt(FIXTURE_START_MILLIS);
+    Observation receipt = fixture.provider.dispatch(fixture.context, stop, () -> true);
+    assertThat(receipt.getOutcome()).isEqualTo(Outcome.WAITING);
+    assertThat(stop.getCommand().getSavepointsBeforeStop()).containsExactly(SAVEPOINT);
+    assertThat(fixture.actions)
+        .contains("CancelGWSApplicationWithSp")
+        .doesNotContain("CreateGWSSavepoint", "CancelApplicationInstance");
+    fixture.instanceState = "STOPPED";
+    assertThat(fixture.provider.observe(fixture.context, stop, receipt).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+
+    fixture.nativeStopSavepoint =
+        object(
+            "{\"SavepointId\":\"new\",\"Status\":\"AVAILABLE\","
+                + "\"SavepointPath\":\"s3p://volc-flink-meta-test/save-points/20240101/deployment-5/time/savepoint\","
+                + "\"Description\":\"stop-with-savepoint\",\"Id\":\"record-1\","
+                + "\"CreateTime\":\"2024-01-01 07:59:59\"}");
+    assertThat(fixture.provider.observe(fixture.context, stop, receipt).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    fixture.nativeStopSavepoint.addProperty(
+        "SavepointPath",
+        "s3p://volc-flink-meta-test/save-points/20240101/deployment-4/time/savepoint");
+    assertThat(fixture.provider.observe(fixture.context, stop, receipt).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    fixture.nativeStopSavepoint.addProperty("CreateTime", "2024-01-01 08:00:01");
+    assertThat(fixture.provider.observe(fixture.context, stop, null).getOutcome())
+        .isEqualTo(Outcome.WAITING);
+    assertThat(fixture.provider.observe(fixture.context, stop, receipt))
+        .extracting(
+            Observation::getOutcome,
+            Observation::getInstanceId,
+            Observation::getRecordId,
+            Observation::getRestoreRef)
+        .containsExactly(Outcome.CONFIRMED, "4", "record-1", "new");
+  }
+
   private static final class Fixture {
     private boolean ambiguous;
     private JsonObject prior;
@@ -347,12 +450,15 @@ class VolcengineDispatchTest {
     private boolean directInstance;
     private String instanceState = "SUCCEEDED";
     private int draftStatus;
+    private String draftSql;
     private String startTime = "2024-01-01 08:00:00";
     private boolean latestAvailable = true;
     private JsonObject submitted;
+    private JsonObject nativeStopSavepoint;
     private final Context context;
     private final OperationStep step;
     private final VolcengineManagedFlinkProvider provider;
+    private final VolcengineProfileBinding binding;
     private final List<String> actions = new ArrayList<>();
     private final JsonObject publication;
 
@@ -417,6 +523,15 @@ class VolcengineDispatchTest {
                   assertThat(chain.request().httpUrl().queryParameter("ProjectId"))
                       .isEqualTo("project");
                 }
+                if ("CancelGWSApplicationWithSp".equals(action)) {
+                  Buffer body = new Buffer();
+                  chain.request().body().writeTo(body);
+                  assertThat(object(body.readUtf8())).isEqualTo(object("{\"Id\":\"3\"}"));
+                  assertThat(chain.request().httpUrl().queryParameter("Version"))
+                      .isEqualTo("2021-06-01");
+                  assertThat(chain.request().httpUrl().queryParameter("ProjectId"))
+                      .isEqualTo("project");
+                }
                 if (START.equals(action)) {
                   Buffer body = new Buffer();
                   chain.request().body().writeTo(body);
@@ -466,7 +581,7 @@ class VolcengineDispatchTest {
               context.getRegion(),
               Credentials.getCredentials("fixture-ak", "fixture-sk"),
               transport);
-      VolcengineProfileBinding binding =
+      binding =
           new VolcengineProfileBinding(
               "fixture-profile",
               1,
@@ -524,6 +639,7 @@ class VolcengineDispatchTest {
           }
           return object(
               "{\"Id\":\"7\",\"ProjectId\":\"project\",\"JobId\":\"3\",\"State\":\"RUNNING\"}");
+        case "CancelGWSApplicationWithSp":
         case "CancelApplicationInstance":
           return object("{\"Success\":true}");
         case "GetGWSApplication":
@@ -531,10 +647,15 @@ class VolcengineDispatchTest {
         case "ValidateGWSApplicationDraft":
           return object("{\"Data\":true}");
         case "GetGWSApplicationDraft":
-          return object(
-              "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\",\"JobType\":\"FLINK_STREAMING_SQL\",\"EngineVersion\":\""
-                  + engine
-                  + "\"}");
+          JsonObject draft =
+              object(
+                  "{\"Id\":\"draft\",\"ProjectId\":\"project\",\"DirectoryId\":\"directory\",\"JobType\":\"FLINK_STREAMING_SQL\",\"EngineVersion\":\""
+                      + engine
+                      + "\",\"JobName\":\"test-job\"}");
+          if (draftSql != null) {
+            draft.addProperty("SqlText", draftSql);
+          }
+          return draft;
         case "GetGWSStartMethod":
           return latestAvailable
               ? object("{\"EnableStartMethods\":[\"FROM_LATEST\"]}")
@@ -547,10 +668,15 @@ class VolcengineDispatchTest {
                     + savepointStatus
                     + "\"}]}");
           }
-          return object(
-              "{\"SavepointInfos\":[{\"SavepointId\":\""
-                  + SAVEPOINT
-                  + "\",\"Status\":\"AVAILABLE\",\"SavepointPath\":\"fixture-path\"}]}");
+          JsonObject points =
+              object(
+                  "{\"SavepointInfos\":[{\"SavepointId\":\""
+                      + SAVEPOINT
+                      + "\",\"Status\":\"AVAILABLE\",\"SavepointPath\":\"fixture-path\"}]}");
+          if (nativeStopSavepoint != null) {
+            points.getAsJsonArray("SavepointInfos").add(nativeStopSavepoint);
+          }
+          return points;
         case "StartApplicationInstance":
           return object("{\"Id\":\"3\",\"InstanceId\":\"4\"}");
         case START:

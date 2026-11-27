@@ -34,6 +34,7 @@
   import { useI18n } from '/@/hooks/web/useI18n';
   import { usePermission } from '/@/hooks/web/usePermission';
   import {
+    importManagedCloudJar,
     managedGet,
     managedPatch,
     managedPost,
@@ -62,6 +63,7 @@
   const argText = ref('');
   const configurationText = ref('');
   const buildSource = reactive({ projectId: '', module: '', jar: '' });
+  const cloudJarUri = ref('');
   const editingRevision = ref<string>();
   const savedSpec = ref('');
   const savedConfigurationText = ref('');
@@ -85,6 +87,7 @@
     engine?: string;
     runtimeId?: string;
     dashboard?: string;
+    dashboardStatus?: string;
   }>();
 
   function readCloudInstance(id: string) {
@@ -126,8 +129,10 @@
     }[];
   }>();
   const snapshots = ref<Snapshot[]>([]);
+  const restoreChoices = ref<Pick<Snapshot, 'id'>[]>([]);
   const operations = ref<Operation[]>([]);
   const selected = ref<Operation>();
+  const reviewedDraft = reactive({ draftId: '', evidenceReference: '' });
   let selectionGeneration = 0;
   const restore = ref<
     'FROM_NEW' | 'FROM_LATEST' | 'FROM_CLOUD_LATEST' | 'FROM_CLOUD_SNAPSHOT' | 'FROM_SNAPSHOT'
@@ -178,9 +183,38 @@
       ? 'PUBLISH_SQL_UDF'
       : 'PUBLISH_' + spec.value?.type,
   );
-  const restoreChoices = computed(() =>
-    snapshots.value.filter(
-      (value) => value.restorable && value.release_id === job.value?.activeReleaseId,
+  const canContinue = computed(() => {
+    const operation = selected.value;
+    if (!operation?.canContinue) return false;
+    switch (operation.command_type) {
+      case 'PUBLISH':
+      case 'ROLLBACK':
+        return hasPermission('app:release');
+      case 'SUBMIT':
+        return (
+          hasPermission('app:release') && hasPermission('app:start') && hasPermission('app:create')
+        );
+      case 'RESTART':
+        return hasPermission('app:start') && hasPermission('app:cancel');
+      case 'START':
+        return hasPermission('app:start');
+      case 'SNAPSHOT':
+        return hasPermission('savepoint:trigger');
+      case 'STOP':
+        return (
+          hasPermission('app:cancel') &&
+          (!operation.steps?.some(
+            ({ action }) => action === 'SNAPSHOT' || action === 'STOP_WITH_SAVEPOINT',
+          ) ||
+            hasPermission('savepoint:trigger'))
+        );
+      default:
+        return false;
+    }
+  });
+  const validDraftEvidence = computed(() =>
+    [reviewedDraft.draftId, reviewedDraft.evidenceReference].every((value) =>
+      /^[A-Za-z0-9_.-]{1,191}$/.test(value),
     ),
   );
 
@@ -195,17 +229,22 @@
   }
 
   async function load(initial: boolean) {
-    const [info, rel, allRuns, points, ops] = await Promise.all([
+    const [info, rel, allRuns, points, options, ops] = await Promise.all([
       managedGet<Job>(base),
       managedGet<Release[]>(base + '/releases'),
       managedGet<Run[]>(base + '/runs'),
       managedGet<Snapshot[]>(base + '/snapshots'),
+      managedGet<{ snapshots: Pick<Snapshot, 'id'>[] }>(base + '/restore-options'),
       managedGet<Operation[]>(base + '/operations'),
     ]);
     job.value = info;
     releases.value = rel;
     runs.value = allRuns;
     snapshots.value = points;
+    restoreChoices.value = options.snapshots;
+    if (snapshotId.value && !options.snapshots.some(({ id }) => id === snapshotId.value)) {
+      snapshotId.value = undefined;
+    }
     operations.value = ops;
     if (initial || !spec.value) {
       spec.value = info.spec;
@@ -342,6 +381,14 @@
     });
   }
 
+  function importCloudJar() {
+    void action(async () => {
+      const artifactId = await importManagedCloudJar(props.appId, cloudJarUri.value.trim());
+      await attachArtifact(artifactId);
+      cloudJarUri.value = '';
+    });
+  }
+
   function command(name: string, data: Record<string, unknown>) {
     if (lock.value) return;
     void action(async () => {
@@ -392,6 +439,14 @@
     if (generation === selectionGeneration) selected.value = detail;
   }
 
+  watch(
+    () => selected.value?.id,
+    () => {
+      reviewedDraft.draftId = '';
+      reviewedDraft.evidenceReference = '';
+    },
+  );
+
   function details(id: string) {
     const generation = ++selectionGeneration;
     selected.value = undefined;
@@ -406,6 +461,23 @@
   function reconcile(id: string) {
     void action(async () => {
       await managedPost(base + '/operations/' + id + '/reconcile', {});
+      await refresh();
+    });
+  }
+
+  function resolve(decision: 'CONTINUE' | 'CONFIRM_DRAFT') {
+    const operation = selected.value;
+    if (!operation || operation.step_index === undefined || operation.updated_at === undefined) {
+      return;
+    }
+    const evidence = decision === 'CONFIRM_DRAFT' ? { ...reviewedDraft } : {};
+    void action(async () => {
+      await managedPost(base + '/operations/' + operation.id + '/resolve', {
+        decision,
+        expectedStepIndex: operation.step_index,
+        expectedUpdatedAt: operation.updated_at,
+        ...evidence,
+      });
       await refresh();
     });
   }
@@ -540,6 +612,26 @@
                   @click="importBuild"
                   >{{ t('managedFlink.importBuild') }}</Button
                 >
+              </Space>
+            </FormItem>
+            <FormItem
+              v-if="job.provider === 'volcengine' && spec.type === 'JAR' && can('ARTIFACT_UPLOAD')"
+              v-auth="'app:update'"
+              :label="t('managedFlink.importCloudJar')"
+            >
+              <Space wrap>
+                <Input
+                  v-model:value="cloudJarUri"
+                  :aria-label="t('managedFlink.cloudJarUri')"
+                  :disabled="busy"
+                  placeholder="tos://bucket/prefix/application.jar"
+                />
+                <Button
+                  :disabled="busy || !cloudJarUri.trim().startsWith('tos://')"
+                  @click="importCloudJar"
+                >
+                  {{ t('managedFlink.importCloudJar') }}
+                </Button>
               </Space>
             </FormItem>
             <template v-if="spec.type === 'JAR'">
@@ -762,16 +854,37 @@
               }}</Button>
             </Popconfirm>
             <Popconfirm
+              v-if="hasPermission('app:cancel') && hasPermission('savepoint:trigger')"
               :key="'snapshotStopConfirm-' + run?.id"
               :title="t('managedFlink.snapshotStopConfirm')"
               :disabled="lock"
               @confirm="command('stop', { expectedRunId: run?.id, mode: 'AFTER_SNAPSHOT' })"
             >
               <Button
-                v-auth="'app:cancel'"
-                :disabled="lock || !running || !canRun('SNAPSHOT_THEN_STOP')"
+                :disabled="
+                  lock ||
+                  !running ||
+                  !canRun('SNAPSHOT_THEN_STOP') ||
+                  !canRun('SNAPSHOT') ||
+                  !canRun('STOP')
+                "
                 >{{ t('managedFlink.snapshotStop') }}</Button
               >
+            </Popconfirm>
+            <Popconfirm
+              v-if="
+                canRun('STOP_WITH_SAVEPOINT') &&
+                hasPermission('app:cancel') &&
+                hasPermission('savepoint:trigger')
+              "
+              :key="'nativeSnapshotStopConfirm-' + run?.id"
+              :title="t('managedFlink.nativeSnapshotStopConfirm')"
+              :disabled="lock"
+              @confirm="command('stop', { expectedRunId: run?.id, mode: 'WITH_SAVEPOINT' })"
+            >
+              <Button :disabled="lock || !running">
+                {{ t('managedFlink.nativeSnapshotStop') }}
+              </Button>
             </Popconfirm>
             <Button
               v-auth="'savepoint:trigger'"
@@ -806,10 +919,7 @@
               :disabled="publicationDisabled('rollback')"
               @confirm="publish('rollback')"
             >
-              <Button
-                v-auth="'app:release'"
-                :disabled="publicationDisabled('rollback')"
-              >
+              <Button v-auth="'app:release'" :disabled="publicationDisabled('rollback')">
                 {{ t('managedFlink.rollback') }}
               </Button>
             </Popconfirm>
@@ -872,6 +982,9 @@
                 rel="noopener noreferrer"
                 >Flink UI</a
               >
+              <span v-else-if="cloudInstance.dashboardStatus === 'UNAVAILABLE'">
+                {{ t('managedFlink.dashboardUnavailable') }}
+              </span>
             </p>
             <Space>
               <Button
@@ -1034,6 +1147,7 @@
         </TabPane>
       </Tabs>
       <Drawer :visible="Boolean(selected)" :title="selected?.id" width="480" @close="closeDetails">
+        <Alert v-if="error" class="mb-4" :message="error" type="error" show-icon />
         <p>{{ selected?.command_type }} · {{ selected?.status }}</p>
         <List :data-source="selected?.steps || []">
           <template #renderItem="{ item }">
@@ -1043,13 +1157,70 @@
             >
           </template>
         </List>
+        <List
+          v-if="selected?.reviewHistory?.length"
+          :header="t('managedFlink.reviewHistory')"
+          :data-source="selected.reviewHistory"
+        >
+          <template #renderItem="{ item }">
+            <ListItem>
+              {{ t('managedFlink.reviewDecision.' + item.decision) }} ·
+              {{ new Date(Number(item.reviewedAt)).toLocaleString() }} · {{ item.actor }}
+              <span v-if="item.draftId"> · {{ item.draftId }}</span>
+              <span v-if="item.evidenceReference"> · {{ item.evidenceReference }}</span>
+            </ListItem>
+          </template>
+        </List>
         <Button
-          v-if="selected?.status === 'VERIFY_REQUIRED'"
-          v-auth="'app:release'"
+          v-if="selected?.status === 'VERIFY_REQUIRED' && !selected.canContinue"
+          v-auth="'app:detail'"
           :loading="busy"
           @click="selected && reconcile(selected.id)"
           >{{ t('managedFlink.reconcile') }}</Button
         >
+        <Popconfirm
+          v-if="canContinue"
+          :key="JSON.stringify([selected?.id, selected?.step_index, selected?.updated_at])"
+          :title="t('managedFlink.continueReviewPrompt')"
+          :disabled="busy"
+          @confirm="resolve('CONTINUE')"
+        >
+          <Button :loading="busy">{{ t('managedFlink.continueReview') }}</Button>
+        </Popconfirm>
+        <Form
+          v-if="selected?.canConfirmDraft && hasPermission('app:release')"
+          class="mt-4"
+          layout="vertical"
+        >
+          <FormItem :label="t('managedFlink.reviewedDraftId')" required>
+            <Input v-model:value="reviewedDraft.draftId" :maxlength="191" :disabled="busy" />
+          </FormItem>
+          <FormItem :label="t('managedFlink.evidenceReference')" required>
+            <Input
+              v-model:value="reviewedDraft.evidenceReference"
+              :maxlength="191"
+              :disabled="busy"
+            />
+          </FormItem>
+          <Popconfirm
+            :key="
+              JSON.stringify([
+                selected?.id,
+                selected?.step_index,
+                selected?.updated_at,
+                reviewedDraft.draftId,
+                reviewedDraft.evidenceReference,
+              ])
+            "
+            :title="t('managedFlink.confirmDraftReviewPrompt')"
+            :disabled="busy || !validDraftEvidence"
+            @confirm="resolve('CONFIRM_DRAFT')"
+          >
+            <Button :loading="busy" :disabled="!validDraftEvidence">{{
+              t('managedFlink.confirmDraftReview')
+            }}</Button>
+          </Popconfirm>
+        </Form>
       </Drawer>
     </template>
   </section>

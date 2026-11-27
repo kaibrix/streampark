@@ -17,18 +17,27 @@
 
 package org.apache.streampark.console.core.managedflink;
 
+import org.apache.streampark.common.enums.DevelopmentMode;
+import org.apache.streampark.common.enums.ExecutionMode;
+import org.apache.streampark.console.core.entity.Application;
+import org.apache.streampark.console.core.entity.FlinkSql;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkLifecycleTest.Fixture;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Command;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.CommandType;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Context;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Restore;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Target;
+import org.apache.streampark.console.core.service.ApplicationService;
+import org.apache.streampark.console.core.service.FlinkSqlService;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.ByteArrayOutputStream;
@@ -41,6 +50,9 @@ import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class ManagedFlinkArtifactAndReleaseTest {
 
@@ -175,10 +187,63 @@ class ManagedFlinkArtifactAndReleaseTest {
   }
 
   @Test
-  void alibabaSqlUsesLockAndReadback() {
+  void rollbackReusesSnapshotsOfTheSameFrozenSpecification() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    complete(test, test.publish("first-publish", test.command()));
+    String first = activeRelease(test);
+    complete(test, submit(test, CommandType.START, start(first, RestoreMode.FROM_NEW, null)));
+    String firstRun = currentRun(test);
+    Command stop = new Command();
+    stop.setExpectedRunId(firstRun);
+    stop.setMode("AFTER_SNAPSHOT");
+    complete(test, submit(test, CommandType.STOP, stop));
+    String snapshot =
+        test.sql.queryForObject(
+            "select id from t_flink_managed_snapshot where run_id=?", String.class, firstRun);
+
+    JobInput edit = new JobInput();
+    edit.setExpectedDraftRevision(1L);
+    Spec changed = new Spec();
+    changed.setType(JobType.SQL);
+    changed.setSql("SELECT 2");
+    edit.setSpec(changed);
+    test.tx.executeWithoutResult(status -> test.jobs.edit(TEAM, APP, edit));
+    Command publish = test.command();
+    publish.setDraftRevision(2L);
+    publish.setExpectedReleaseId(first);
+    complete(test, test.publish("changed-publish", publish));
+    String second = activeRelease(test);
+    assertThat(test.jobs.restoreOptions(APP, second)).isEmpty();
+    assertThatThrownBy(
+            () ->
+                submit(test, CommandType.START, start(second, RestoreMode.FROM_SNAPSHOT, snapshot)))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("Snapshot is unavailable or incompatible");
+
+    Command rollback = test.command();
+    rollback.setSourceReleaseId(first);
+    rollback.setExpectedReleaseId(second);
+    complete(test, submit(test, CommandType.ROLLBACK, rollback));
+    String rollbackRelease = activeRelease(test);
+    assertThat(rollbackRelease).isNotEqualTo(first);
+    assertThat(test.jobs.restoreOptions(APP, rollbackRelease))
+        .singleElement()
+        .satisfies(option -> assertThat(option).containsEntry("id", snapshot));
+    complete(
+        test,
+        submit(
+            test, CommandType.START, start(rollbackRelease, RestoreMode.FROM_SNAPSHOT, snapshot)));
+    assertThat(currentRun(test)).isNotEqualTo(firstRun);
+  }
+
+  @Test
+  void alibabaSqlUsesAsyncPublicationAndTheSharedSnapshotRestoreFlow() {
     Fixture test = new Fixture(new MockManagedFlinkProvider.AlibabaFixture());
     String operation = test.publish("alibaba-sql", test.command());
-    complete(test, operation);
+    for (int transition = 0; transition < 7; transition++) {
+      test.makeDue(operation);
+      test.first.advance(operation);
+    }
     assertThat(
             test.sql.queryForList(
                 "select action from t_flink_managed_operation_step "
@@ -186,7 +251,35 @@ class ManagedFlinkArtifactAndReleaseTest {
                 String.class,
                 operation))
         .containsExactly("CREATE_DRAFT", "LOCK_DRAFT", "UPDATE_DRAFT", "PUBLISH");
+    assertThat(test.status(operation)).isEqualTo("WAITING_PROVIDER");
+    assertThat(activeRelease(test)).isNull();
+    complete(test, operation);
+    String release = activeRelease(test);
+    assertThat(release).isNotBlank();
     assertThat(countRuns(test)).isZero();
+
+    complete(test, submit(test, CommandType.START, start(release, RestoreMode.FROM_NEW, null)));
+    String initialRun = currentRun(test);
+    assertThat(runState(test, initialRun)).isEqualTo("RUNNING");
+    assertThat(test.jobs.diagnostics(TEAM, APP, initialRun, "metrics", null, null))
+        .containsEntry("status", "UNVERIFIED");
+
+    Command stop = new Command();
+    stop.setExpectedRunId(initialRun);
+    stop.setMode("AFTER_SNAPSHOT");
+    complete(test, submit(test, CommandType.STOP, stop));
+    assertThat(runState(test, initialRun)).isEqualTo("STOPPED");
+    String snapshot =
+        test.sql.queryForObject(
+            "select id from t_flink_managed_snapshot where run_id=? and restorable=true",
+            String.class,
+            initialRun);
+    assertThat(snapshot).isNotBlank();
+    complete(
+        test, submit(test, CommandType.START, start(release, RestoreMode.FROM_SNAPSHOT, snapshot)));
+    assertThat(currentRun(test)).isNotEqualTo(initialRun);
+    assertThat(countRuns(test)).isEqualTo(2);
+    assertThat(runState(test, currentRun(test))).isEqualTo("RUNNING");
   }
 
   @Test
@@ -226,6 +319,101 @@ class ManagedFlinkArtifactAndReleaseTest {
     assertThatThrownBy(() -> test.jobs.validateDraft(TEAM, APP, sql))
         .isInstanceOf(ResponseStatusException.class)
         .hasMessageContaining("Job type is fixed");
+  }
+
+  @Test
+  void copyingManagedSpecKeepsPortableSettingsAndRejectsAnotherTeam() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    Spec draft = new Spec();
+    draft.setType(JobType.SQL);
+    draft.setSql("SELECT 1");
+    draft.setUdfArtifactId("team-scoped-artifact");
+    draft.getDependencyIds().add("team-scoped-dependency");
+    draft.setPriority(4);
+    draft.getConfiguration().put("parallelism.default", "2");
+    draft.getConfiguration().put("containerized.master.env.STREAM_PARK_LOCAL", "local-value");
+    test.sql.update(
+        "update t_flink_managed_job set draft_spec=? where app_id=?",
+        test.store.encode(draft),
+        APP);
+    Application app = new Application();
+    app.setId(APP);
+    app.setTeamId(TEAM);
+    app.setExecutionMode(ExecutionMode.MANAGED_FLINK.getMode());
+    ApplicationService sources = mock(ApplicationService.class);
+    when(sources.getById(APP)).thenReturn(app);
+    ManagedFlinkJobs jobs =
+        new ManagedFlinkJobs(test.store, test.catalog, sources, test.tx.getTransactionManager());
+
+    Spec copied = jobs.copySpec(TEAM, APP);
+    assertThat(copied.getSql()).isEqualTo("SELECT 1");
+    assertThat(copied.getConfiguration()).hasSize(1).containsEntry("parallelism.default", "2");
+    assertThat(copied.getPriority()).isNull();
+    assertThat(copied.getUdfArtifactId()).isNull();
+    assertThat(copied.getDependencyIds()).isEmpty();
+    assertThat(test.jobField("draft_spec")).isEqualTo(test.store.encode(draft));
+    assertThatThrownBy(() -> jobs.copySpec(TEAM + 1, APP))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("Source Flink job not found");
+  }
+
+  @Test
+  void copyingNativeSqlReadsTheSavedSqlOnlyForTheOwningTeam() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    Application app = new Application();
+    app.setId(APP);
+    app.setTeamId(TEAM);
+    app.setExecutionMode(ExecutionMode.REMOTE.getMode());
+    app.setJobType(DevelopmentMode.FLINK_SQL.getValue());
+    ApplicationService sources = mock(ApplicationService.class);
+    when(sources.getById(APP)).thenReturn(app);
+    FlinkSqlService nativeSql = mock(FlinkSqlService.class);
+    ManagedFlinkJobs jobs =
+        new ManagedFlinkJobs(test.store, test.catalog, sources, test.tx.getTransactionManager());
+    ReflectionTestUtils.setField(jobs, "flinkSql", nativeSql);
+
+    assertThatThrownBy(() -> jobs.copySpec(TEAM + 1, APP))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasMessageContaining("Source Flink job not found");
+    verifyNoInteractions(nativeSql);
+
+    FlinkSql source = new FlinkSql();
+    source.setSql("SELECT 'native'");
+    when(nativeSql.getLatestFlinkSql(APP, true)).thenReturn(source);
+    assertThat(jobs.copySpec(TEAM, APP))
+        .extracting(Spec::getType, Spec::getSql)
+        .containsExactly(JobType.SQL, "SELECT 'native'");
+  }
+
+  @Test
+  void rejectsInvalidOrOutOfScopeTosUrisBeforeReadingAnObject() {
+    VolcengineArtifactStore artifacts = new VolcengineArtifactStore();
+    Target target = new Target();
+    target.setArtifactBucket("test-bucket");
+    target.setArtifactPrefix("test-prefix");
+    Context context = new Context(TEAM, "cn-beijing", "account", target, null);
+    for (String uri :
+        Arrays.asList(
+            null,
+            "https://test-bucket/test-prefix/job.jar",
+            "tos://other-bucket/test-prefix/job.jar",
+            "tos://test-bucket/test-prefix-adjacent/job.jar",
+            "tos://test-bucket/test-prefix/../job.jar",
+            "tos://test-bucket/test-prefix/job.zip")) {
+      assertThatThrownBy(
+              () ->
+                  artifacts.importObject(
+                      context,
+                      null,
+                      uri,
+                      (size, stream) -> {
+                        throw new AssertionError("Invalid object should never be opened");
+                      }))
+          .as("TOS URI %s", uri)
+          .isInstanceOfSatisfying(
+              ResponseStatusException.class,
+              error -> assertThat(error.getStatus().value()).isEqualTo(400));
+    }
   }
 
   @Test

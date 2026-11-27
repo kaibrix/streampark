@@ -29,6 +29,7 @@ import ch.qos.logback.classic.Logger;
 import com.volcengine.sign.Credentials;
 import com.volcengine.tos.TOSV2;
 import com.volcengine.tos.TOSV2ClientBuilder;
+import com.volcengine.tos.TosException;
 import com.volcengine.tos.TosServerException;
 import com.volcengine.tos.auth.StaticCredentials;
 import com.volcengine.tos.model.object.GetObjectV2Input;
@@ -36,6 +37,8 @@ import com.volcengine.tos.model.object.GetObjectV2Output;
 import com.volcengine.tos.model.object.PutObjectFromFileInput;
 import com.volcengine.tos.transport.TransportConfig;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,6 +50,38 @@ import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.
 import static org.apache.streampark.console.core.managedflink.ManagedFlinkStore.sha256;
 
 final class VolcengineArtifactStore {
+  String importObject(
+      Context context,
+      Credentials credentials,
+      String uri,
+      ManagedFlinkProvider.ArtifactCapture capture)
+      throws IOException {
+    String bucket = context.getTarget().getArtifactBucket();
+    String prefix = context.getTarget().getArtifactPrefix();
+    String bucketUri = "tos://" + bucket + "/";
+    String pathPrefix = bucketUri + prefix + "/";
+    if (uri == null
+        || uri.length() > bucketUri.length() + 1024
+        || !uri.startsWith(pathPrefix)
+        || !uri.substring(pathPrefix.length()).matches("([\\w.-]+/)*[\\w.-]+\\.jar")
+        || java.util.Arrays.stream(uri.substring(pathPrefix.length()).split("/"))
+            .anyMatch(part -> part.equals(".") || part.equals(".."))) {
+      throw new ResponseStatusException(
+          HttpStatus.BAD_REQUEST, "Expected a TOS JAR in the environment artifact prefix");
+    }
+    try (TOSV2 tos = client(context, credentials);
+        GetObjectV2Output object =
+            tos.getObject(
+                new GetObjectV2Input()
+                    .setBucket(bucket)
+                    .setKey(uri.substring(bucketUri.length())))) {
+      return capture.capture(object.getContentLength(), object.getContent());
+    } catch (TosException e) {
+      throw new ResponseStatusException(
+          HttpStatus.UNPROCESSABLE_ENTITY, "Cloud artifact is unreadable");
+    }
+  }
+
   Observation stage(
       Context context, OperationStep step, Credentials credentials, BooleanSupplier permit) {
     return stage(context, step, step.getDependency(), credentials, permit);

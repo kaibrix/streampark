@@ -109,7 +109,9 @@ public class ManagedFlinkCatalog {
         .jdbc()
         .queryForList(
             "select id, name, provider, account_ref as \"accountRef\", "
-                + "credential_version as \"credentialVersion\" from t_flink_cloud_connection "
+                + "credential_version as \"credentialVersion\", "
+                + "case when credential is null then true else false end as \"credentialsManagedByServer\" "
+                + "from t_flink_cloud_connection "
                 + "where team_id=? order by name, id limit 100 offset ?",
             team,
             offset);

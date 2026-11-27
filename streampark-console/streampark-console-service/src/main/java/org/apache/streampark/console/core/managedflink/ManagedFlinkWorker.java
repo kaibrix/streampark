@@ -26,6 +26,8 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Frozen
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ResolutionAudit;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ResolutionDecision;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -178,6 +180,15 @@ class ManagedFlinkWorker {
       step.setDependency(command.getDependencies().get(index));
     }
     Map<String, Object> attempt = attempt(operation, index);
+    if (command.isReconcileOnly() && attempt == null) {
+      tx.executeWithoutResult(
+          t -> {
+            if (owns(operation, epoch)) {
+              finish(op, "VERIFY_REQUIRED");
+            }
+          });
+      return;
+    }
     if (System.currentTimeMillis() >= number(op, "deadline_at")) {
       tx.executeWithoutResult(
           t -> {
@@ -191,6 +202,7 @@ class ManagedFlinkWorker {
     Map<String, Object> connection = catalog.connection(team, text(env, "connection_id"));
     ManagedFlinkProvider provider = catalog.provider(text(connection, "provider"));
     Context context;
+    Context preflightContext;
     try {
       // Stop and snapshot commands queued by earlier versions may carry an edited environment.
       String type = text(op, "command_type");
@@ -203,6 +215,13 @@ class ManagedFlinkWorker {
                   ? jobs.releaseTarget(app, text(op, "release_id"))
                   : command.getTarget(),
               job);
+      // Before republishing to an edited target, verify the existing cloud head in its own pool.
+      preflightContext =
+          attempt == null
+                  && step.getProviderJobId() != null
+                  && (action == Action.UPDATE_DRAFT || action == Action.PUBLISH)
+              ? catalog.jobContext(connection, env, null, job)
+              : context;
     } catch (RuntimeException e) {
       tx.executeWithoutResult(
           t -> {
@@ -213,7 +232,10 @@ class ManagedFlinkWorker {
       return;
     }
     if (attempt == null) {
-      String conflict = preflight(provider, context, step, job);
+      if (action == Action.UPDATE_DRAFT) {
+        bindDraftEvidence(step);
+      }
+      String conflict = preflight(provider, preflightContext, step, job);
       if (conflict != null) {
         tx.executeWithoutResult(
             t -> {
@@ -259,7 +281,8 @@ class ManagedFlinkWorker {
               }
             } else if (ack.getDraftId() != null
                 || ack.getInstanceId() != null
-                || ack.getJobId() != null) {
+                || ack.getJobId() != null
+                || ack.getRequestId() != null) {
               // Keep the exact attempt's receipt for the current owner to verify.
               store
                   .jdbc()
@@ -278,10 +301,7 @@ class ManagedFlinkWorker {
     Observation response;
     try {
       step.setDispatchedAt(number(attempt, "started_at"));
-      String persisted = text(attempt, "result");
-      response =
-          provider.observe(
-              context, step, persisted == null ? null : store.decode(persisted, Observation.class));
+      response = provider.observe(context, step, readbackReceipt(step, index, attempt));
     } catch (RuntimeException e) {
       response = Observation.outcome(Outcome.UNKNOWN, "OBSERVATION_FAILED");
     }
@@ -292,6 +312,28 @@ class ManagedFlinkWorker {
             apply(op, job, step, index, evidence);
           }
         });
+  }
+
+  private Observation readbackReceipt(OperationStep step, int index, Map<String, Object> attempt) {
+    String persisted = text(attempt, "result");
+    Observation receipt = persisted == null ? null : store.decode(persisted, Observation.class);
+    if (step.getAction() != Action.CREATE_DRAFT
+        || (receipt != null && receipt.getDraftId() != null)) {
+      return receipt;
+    }
+    List<ResolutionAudit> history = step.getCommand().getReviewHistory();
+    for (int i = history.size() - 1; i >= 0; i--) {
+      ResolutionAudit decision = history.get(i);
+      if (decision.getStepIndex() == index
+          && decision.getDecision() == ResolutionDecision.CONFIRM_DRAFT) {
+        if (receipt == null) {
+          receipt = Observation.outcome(Outcome.WAITING, null);
+        }
+        receipt.setDraftId(decision.getDraftId());
+        break;
+      }
+    }
+    return receipt;
   }
 
   private String preflight(
@@ -342,6 +384,7 @@ class ManagedFlinkWorker {
             || java.util.Arrays.asList("STOPPED", "FAILED", "FINISHED")
                 .contains(state.getRunState());
     if (step.getAction() == Action.STOP
+        || step.getAction() == Action.STOP_WITH_SAVEPOINT
         || step.getAction() == Action.RESTART
         || step.getAction() == Action.SNAPSHOT) {
       return !stopped
@@ -459,6 +502,36 @@ class ManagedFlinkWorker {
         index);
   }
 
+  private void bindDraftEvidence(OperationStep step) {
+    Map<String, Object> confirmed =
+        store.find(
+            "select s.result,s.action,s.operation_id,o.command from t_flink_managed_operation_step s "
+                + "join t_flink_managed_operation o on o.id=s.operation_id "
+                + "where o.app_id=? and s.state='CONFIRMED' and s.action in ('CREATE_DRAFT','UPDATE_DRAFT') "
+                + "order by s.finished_at desc,o.created_at desc,s.step_index desc limit 1",
+            step.getAppId());
+    if (confirmed == null || text(confirmed, "result") == null) {
+      return;
+    }
+    Observation proof = store.decode(text(confirmed, "result"), Observation.class);
+    if (!Objects.equals(step.getDraftId(), proof.getDraftId())) {
+      return;
+    }
+    step.setDraftFingerprint(proof.getDraftFingerprint());
+    if (proof.getDraftFingerprint() == null && "UPDATE_DRAFT".equals(text(confirmed, "action"))) {
+      String operation = text(confirmed, "operation_id");
+      step.setPreviousDraftUpdate(
+          new OperationStep(
+              operation,
+              step.getAppId(),
+              Action.UPDATE_DRAFT,
+              store.decode(text(confirmed, "command"), FrozenCommand.class),
+              step.getDraftId(),
+              step.getProviderJobId(),
+              staged(operation)));
+    }
+  }
+
   private String staged(String operation) {
     Map<String, Object> stage =
         store.find(
@@ -488,7 +561,8 @@ class ManagedFlinkWorker {
             index,
             step.getAction().name(),
             System.currentTimeMillis());
-    if (step.getCommand().getInstanceBeforeDispatch() != null) {
+    if (step.getCommand().getInstanceBeforeDispatch() != null
+        || step.getCommand().getSavepointsBeforeStop() != null) {
       store
           .jdbc()
           .update(
@@ -559,6 +633,8 @@ class ManagedFlinkWorker {
     updateAttempt(step, index, evidence, "CONFIRMED");
     if (index + 1 == step.getCommand().getActions().size()) {
       finish(op, "SUCCEEDED");
+    } else if (step.getCommand().isReconcileOnly()) {
+      finish(op, "VERIFY_REQUIRED");
     } else {
       store
           .jdbc()
@@ -649,58 +725,83 @@ class ManagedFlinkWorker {
                 .contains(result.getRunState())) {
           return false;
         }
-        store
-            .jdbc()
-            .update(
-                "update t_flink_managed_run set run_state=?,raw_state=?,"
-                    + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
-                result.getRunState(),
-                result.getRunState(),
-                now,
-                now,
-                app,
-                result.getInstanceId());
-        store
-            .jdbc()
-            .update(
-                "update t_flink_app set state=?,end_time=? where id=?",
-                ("STOPPED".equals(result.getRunState())
-                        ? FlinkAppState.CANCELED
-                        : FlinkAppState.of(result.getRunState()))
-                    .getValue(),
-                new Date(now),
-                app);
+        recordStopped(app, result, now);
+        return true;
+      case STOP_WITH_SAVEPOINT:
+        if (!"STOPPED".equals(result.getRunState()) || !recordSnapshot(job, step, result, now)) {
+          return false;
+        }
+        recordStopped(app, result, now);
         return true;
       case SNAPSHOT:
-        if (!sameInstance(step, result)
-            || !hasId(result.getRecordId(), 191)
-            || !hasId(result.getRestoreRef(), 191)) {
-          return false;
-        }
-        Map<String, Object> current = jobs.currentRun(job);
-        if (current == null
-            || !Objects.equals(result.getInstanceId(), text(current, "provider_instance_id"))) {
-          return false;
-        }
-        store
-            .jdbc()
-            .update(
-                "insert into t_flink_managed_snapshot (id,app_id,run_id,release_id,"
-                    + "operation_id,provider_record_id,restore_ref,state,restorable,created_at,observed_at) "
-                    + "values (?,?,?,?,?,?,?,'AVAILABLE',true,?,?)",
-                id(),
-                app,
-                current.get("id"),
-                current.get("release_id"),
-                step.getOperationId(),
-                result.getRecordId(),
-                result.getRestoreRef(),
-                now,
-                now);
-        return true;
+        return recordSnapshot(job, step, result, now);
       default:
         return false;
     }
+  }
+
+  private void recordStopped(long app, Observation result, long now) {
+    store
+        .jdbc()
+        .update(
+            "update t_flink_managed_run set run_state=?,raw_state=?,"
+                + "ended_at=?,observed_at=? where app_id=? and provider_instance_id=?",
+            result.getRunState(),
+            result.getRunState(),
+            now,
+            now,
+            app,
+            result.getInstanceId());
+    store
+        .jdbc()
+        .update(
+            "update t_flink_app set state=?,end_time=? where id=? and exists "
+                + "(select 1 from t_flink_managed_job j join t_flink_managed_run r "
+                + "on r.app_id=j.app_id and r.id=j.current_run_id "
+                + "where j.app_id=? and r.provider_instance_id=?)",
+            ("STOPPED".equals(result.getRunState())
+                    ? FlinkAppState.CANCELED
+                    : FlinkAppState.of(result.getRunState()))
+                .getValue(),
+            new Date(now),
+            app,
+            app,
+            result.getInstanceId());
+  }
+
+  private boolean recordSnapshot(
+      Map<String, Object> job, OperationStep step, Observation result, long now) {
+    if (!sameInstance(step, result)
+        || !hasId(result.getRecordId(), 191)
+        || !hasId(result.getRestoreRef(), 191)) {
+      return false;
+    }
+    Map<String, Object> run =
+        store.find(
+            "select id,release_id from t_flink_managed_run where app_id=? and provider_instance_id=?",
+            step.getAppId(),
+            result.getInstanceId());
+    if (run == null
+        || (step.getAction() == Action.SNAPSHOT
+            && !Objects.equals(run.get("id"), job.get("current_run_id")))) {
+      return false;
+    }
+    store
+        .jdbc()
+        .update(
+            "insert into t_flink_managed_snapshot (id,app_id,run_id,release_id,"
+                + "operation_id,provider_record_id,restore_ref,state,restorable,created_at,observed_at) "
+                + "values (?,?,?,?,?,?,?,'AVAILABLE',true,?,?)",
+            id(),
+            step.getAppId(),
+            run.get("id"),
+            run.get("release_id"),
+            step.getOperationId(),
+            result.getRecordId(),
+            result.getRestoreRef(),
+            now,
+            now);
+    return true;
   }
 
   private boolean start(

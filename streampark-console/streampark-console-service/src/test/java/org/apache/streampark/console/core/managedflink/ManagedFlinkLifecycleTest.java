@@ -26,9 +26,11 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Contex
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobInput;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.JobType;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Observation;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationResolution;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.OperationStep;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ReadStatus;
+import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.ResolutionDecision;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Restore;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.RestoreMode;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
@@ -404,6 +406,60 @@ class ManagedFlinkLifecycleTest {
   }
 
   @Test
+  void refreshingAnUnknownDraftWriteRequiresExplicitContinuation() {
+    AtomicInteger creates = new AtomicInteger();
+    AtomicInteger updates = new AtomicInteger();
+    Fixture test =
+        new Fixture(
+            new MockManagedFlinkProvider() {
+              @Override
+              public Observation dispatch(Context context, OperationStep step) {
+                if (step.getAction() == Action.CREATE_DRAFT) {
+                  creates.incrementAndGet();
+                  super.dispatch(context, step);
+                  return Observation.outcome(Outcome.UNKNOWN, "RESULT_UNCERTAIN");
+                }
+                if (step.getAction() == Action.UPDATE_DRAFT) {
+                  updates.incrementAndGet();
+                }
+                return super.dispatch(context, step);
+              }
+            });
+    String operation = test.publish("lost-draft-receipt", test.command());
+    test.first.advance(operation);
+    test.sql.update(
+        "update t_flink_managed_operation set deadline_at=0,next_run_at=0 where id=?", operation);
+    test.second.advance(operation);
+    assertThat(test.status(operation)).isEqualTo("VERIFY_REQUIRED");
+
+    test.jobs.reviewOperation(100000L, 900401L, operation, null);
+    test.second.advance(operation);
+    assertThat(test.status(operation)).isEqualTo("VERIFY_REQUIRED");
+    assertThat(test.jobField("provider_draft_id")).isEqualTo("draft-900401");
+    assertThat(test.jobField("pending_operation_id")).isEqualTo(operation);
+    assertThat(creates).hasValue(1);
+    assertThat(updates).hasValue(0);
+
+    long updatedAt =
+        test.sql.queryForObject(
+            "select updated_at from t_flink_managed_operation where id=?", Long.class, operation);
+    OperationResolution resolution = new OperationResolution();
+    resolution.setDecision(ResolutionDecision.CONTINUE);
+    resolution.setExpectedStepIndex(0);
+    resolution.setExpectedUpdatedAt(updatedAt - 1);
+    assertThatExceptionOfType(ResponseStatusException.class)
+        .isThrownBy(() -> test.jobs.reviewOperation(100000L, 900401L, operation, resolution))
+        .matches(error -> error.getStatus().value() == 409);
+
+    resolution.setExpectedUpdatedAt(updatedAt);
+    test.jobs.reviewOperation(100000L, 900401L, operation, resolution);
+    test.complete(operation);
+    assertThat(creates).hasValue(1);
+    assertThat(updates).hasValue(1);
+    assertThat(test.jobField("pending_operation_id")).isNull();
+  }
+
+  @Test
   void teamPermissionsAndResourceOwnership() {
     Fixture test = new Fixture(new RecordingProvider(false, false));
     User user = new User();
@@ -464,6 +520,63 @@ class ManagedFlinkLifecycleTest {
                 "select count(*) from t_flink_managed_run where run_state='RUNNING'",
                 Integer.class))
         .isEqualTo(1);
+  }
+
+  @Test
+  void failedSavepointLeavesTheInstanceRunningWithoutDispatchingStop() {
+    AtomicInteger stopRequests = new AtomicInteger();
+    MockManagedFlinkProvider provider =
+        new MockManagedFlinkProvider() {
+          @Override
+          public Observation dispatch(Context context, OperationStep step) {
+            if (step.getAction() == Action.STOP) {
+              stopRequests.incrementAndGet();
+            }
+            return super.dispatch(context, step);
+          }
+
+          @Override
+          public Observation observe(
+              Context context, OperationStep step, Observation acknowledgement) {
+            if (step.getAction() == Action.SNAPSHOT) {
+              return Observation.outcome(Outcome.REJECTED, "CLOUD_SAVEPOINT_FAILED");
+            }
+            return super.observe(context, step, acknowledgement);
+          }
+        };
+    Fixture test = new Fixture(provider);
+    test.complete(test.publish("publish", test.command()));
+    Command start = new Command();
+    start.setExpectedReleaseId(test.jobField("active_release_id"));
+    Restore restore = new Restore();
+    restore.setMode(RestoreMode.FROM_NEW);
+    start.setRestore(restore);
+    test.complete(test.enqueue(CommandType.START, "start", start));
+
+    String run = test.jobField("current_run_id");
+    Command stop = new Command();
+    stop.setExpectedRunId(run);
+    stop.setMode("AFTER_SNAPSHOT");
+    String operation = test.enqueue(CommandType.STOP, "stop-after-snapshot", stop);
+    test.first.advance(operation);
+    assertThat(test.status(operation)).isEqualTo("WAITING_PROVIDER");
+    test.makeDue(operation);
+    test.second.advance(operation);
+    assertThat(test.status(operation)).isEqualTo("FAILED");
+
+    assertThat(stopRequests).hasValue(0);
+    assertThat(test.jobField("current_run_id")).isEqualTo(run);
+    assertThat(test.jobField("pending_operation_id")).isNull();
+    assertThat(
+            test.sql.queryForObject(
+                "select run_state from t_flink_managed_run where id=?", String.class, run))
+        .isEqualTo("RUNNING");
+    assertThat(
+            test.sql.queryForList(
+                "select action from t_flink_managed_operation_step where operation_id=?",
+                String.class,
+                operation))
+        .containsExactly("SNAPSHOT");
   }
 
   @Test
@@ -707,6 +820,36 @@ class ManagedFlinkLifecycleTest {
     assertThat(test.jobField("sync_status")).isEqualTo("DRIFTED");
     assertThatExceptionOfType(ResponseStatusException.class)
         .isThrownBy(() -> test.publish("blocked", test.command()))
+        .matches(error -> error.getStatus().value() == 409);
+  }
+
+  @Test
+  void confirmsCloudDeletionOnlyAfterConsecutiveMissingReadsAndPreservesHistory() {
+    Fixture test = new Fixture(new MockManagedFlinkProvider());
+    test.complete(test.publish("publish", test.command()));
+    String job = test.jobField("provider_job_id");
+    String release = test.jobField("active_release_id");
+    String observed = test.jobField("observed_at");
+    long now = Long.parseLong(observed);
+    CloudState missing = new CloudState(ReadStatus.MISSING, job, null, null, null, null, 0);
+    CloudState unavailable = new CloudState(ReadStatus.STALE, null, null, null, null, null, 0);
+
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), missing, now + 1);
+    assertThat(test.jobField("sync_status")).isEqualTo("STALE");
+    assertThat(test.jobField("missing_reads")).isEqualTo("1");
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), unavailable, now + 2);
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), missing, now + 3);
+    assertThat(test.jobField("sync_status")).isEqualTo("STALE");
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), missing, now + 4);
+    assertThat(test.jobField("sync_status")).isEqualTo("MISSING");
+    test.reconciler.apply(test.jobs.job(100000L, 900401L, false), unavailable, now + 5);
+
+    assertThat(test.jobField("sync_status")).isEqualTo("MISSING");
+    assertThat(test.jobField("active_release_id")).isEqualTo(release);
+    assertThat(test.jobField("provider_job_id")).isEqualTo(job);
+    assertThat(test.jobField("observed_at")).isEqualTo(observed);
+    assertThatExceptionOfType(ResponseStatusException.class)
+        .isThrownBy(() -> test.publish("cannot-publish", test.command()))
         .matches(error -> error.getStatus().value() == 409);
   }
 

@@ -44,6 +44,7 @@ import com.volcengine.flink20250101.model.GetGWSStartMethodResponse;
 import com.volcengine.flink20250101.model.RestoreStrategyForStartApplicationInstanceInput;
 import com.volcengine.flink20250101.model.StartApplicationInstanceRequest;
 import com.volcengine.sign.Credentials;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -101,6 +102,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           "START",
           "CLOUD_RESTART",
           "STOP",
+          "STOP_WITH_SAVEPOINT",
           "SNAPSHOT",
           "SNAPSHOT_THEN_STOP",
           "RESTORE_FROM_SNAPSHOT",
@@ -161,6 +163,17 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   @Override
+  public String importArtifact(Context context, String uri, ArtifactCapture capture)
+      throws IOException {
+    VolcengineOpenApi api = binding.permitsArtifacts(context) ? verifiedClient(context) : null;
+    if (api == null) {
+      throw new ResponseStatusException(
+          HttpStatus.UNPROCESSABLE_ENTITY, "Cloud artifact import is unavailable");
+    }
+    return artifacts.importObject(context, api.credentials(), uri, capture);
+  }
+
+  @Override
   public Map<String, String> capabilities(Context context) {
     Map<String, String> report = new LinkedHashMap<>();
     for (String feature : FEATURES) {
@@ -192,6 +205,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         report.put("RESTORE_FROM_LATEST", "AVAILABLE");
         report.put("RESTORE_FROM_CLOUD_LATEST", "AVAILABLE");
         report.put("RESTORE_FROM_CLOUD_SNAPSHOT", "AVAILABLE");
+      }
+      if (binding.permitsNativeStopWithSavepoint(context)) {
+        report.put("STOP_WITH_SAVEPOINT", "AVAILABLE");
       }
     }
     if (binding.permitsMetricReads(context)) {
@@ -278,7 +294,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
         return readFailure(jobId, ReadStatus.AUTH_ERROR);
       }
       Target target = context.getTarget();
-      JsonObject application = application(api, target, jobId);
+      JsonObject application = application(api, target, jobId, directRelease(target, jobId), true);
       if (application == null) {
         return readFailure(jobId, ReadStatus.STALE);
       }
@@ -360,7 +376,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       result.put("state", text(run, "State"));
       result.put("engine", text(run, "EngineVersion"));
       result.put("runtimeId", text(run, "ApplicationId"));
-      result.put("dashboard", dashboardUrl(text(run, "CompleteRestUrl")));
+      String dashboard = dashboardUrl(text(run, "CompleteRestUrl"), text(run, "ApplicationId"));
+      result.put("dashboard", dashboard);
+      result.put("dashboardStatus", dashboard == null ? "UNAVAILABLE" : "AVAILABLE");
       return result;
     } catch (ReadFailure e) {
       return Collections.singletonMap("status", e.status.name());
@@ -369,16 +387,31 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
   }
 
-  static String dashboardUrl(String value) {
+  static String dashboardUrl(String value, String runtimeId) {
     com.squareup.okhttp.HttpUrl url =
         value == null ? null : com.squareup.okhttp.HttpUrl.parse(value);
-    return url != null
-            && url.isHttps()
-            && url.fragment() == null
-            && url.host().endsWith(".openstudio.ivolces.com")
-            && url.username().isEmpty()
-            && url.password().isEmpty()
-            && url.query() == null
+    if (url == null
+        || !url.isHttps()
+        || url.port() != 443
+        || url.fragment() != null
+        || !url.username().isEmpty()
+        || !url.password().isEmpty()) {
+      return null;
+    }
+    if (url.host().endsWith(".openstudio.ivolces.com") && url.query() == null) {
+      return url.toString();
+    }
+    List<String> path = url.pathSegments();
+    return url.host().endsWith(".flink.volces.com")
+            && runtimeId != null
+            && runtimeId.matches("s-[0-9]+")
+            && path.size() >= 3
+            && "login-server".equals(path.get(0))
+            && "ui".equals(path.get(1))
+            && path.get(2).startsWith(runtimeId + "-rest.")
+            && (path.size() == 3 || (path.size() == 4 && path.get(3).isEmpty()))
+            && url.querySize() == 1
+            && StringUtils.isNotBlank(url.queryParameter("open-platform-token"))
         ? url.toString()
         : null;
   }
@@ -555,6 +588,11 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           if (draft == null) {
             return rejected("DRAFT_NOT_VERIFIED");
           }
+          if (step.getDraftFingerprint() == null
+              ? !VolcengineExecutable.matches(draft, step.getPreviousDraftUpdate(), true)
+              : !step.getDraftFingerprint().equals(VolcengineExecutable.draftFingerprint(draft))) {
+            return rejected("CLOUD_DRAFT_DRIFTED");
+          }
           JsonObject update = draftFields(step, target);
           copy(
               draft,
@@ -637,6 +675,31 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
                           "CreateGWSSavepoint", FLINK_VERSION, Collections.emptyMap(), snapshot),
                       null,
                       null));
+        case STOP_WITH_SAVEPOINT:
+          if (!binding.permitsNativeStopWithSavepoint(context)) {
+            return rejected("CAPABILITY_UNVERIFIED");
+          }
+          List<String> beforeStop =
+              savepoints(api, step.getProviderJobId()).stream()
+                  .map(point -> text(point, "SavepointId"))
+                  .filter(Objects::nonNull)
+                  .distinct()
+                  .collect(Collectors.toList());
+          if (!isCurrentRunning(api, target, step)) {
+            return rejected("INSTANCE_NOT_VERIFIED");
+          }
+          step.getCommand().setSavepointsBeforeStop(beforeStop);
+          return write(
+              permit,
+              () ->
+                  ack(
+                      api.call(
+                          "CancelGWSApplicationWithSp",
+                          VolcengineOpenApi.GWS_VERSION,
+                          scope(target),
+                          fields("Id", step.getProviderJobId())),
+                      null,
+                      "Id"));
         case STOP:
           JsonObject running =
               instance(
@@ -823,13 +886,16 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             return awaiting();
           }
           observation.setDraftId(draftId);
+          observation.setDraftFingerprint(VolcengineExecutable.draftFingerprint(matchedDraft));
           return observation;
         case UPDATE_DRAFT:
-          if (!VolcengineExecutable.matches(draft(api, target, step.getDraftId()), step, true)) {
+          JsonObject updatedDraft = draft(api, target, step.getDraftId());
+          if (!VolcengineExecutable.matches(updatedDraft, step, true)) {
             return awaiting();
           }
           observation.setDraftId(step.getDraftId());
           observation.setSpecHash(step.getCommand().getSpecHash());
+          observation.setDraftFingerprint(VolcengineExecutable.draftFingerprint(updatedDraft));
           return observation;
         case PUBLISH:
           return observedPublish(api, target, step, previous, observation);
@@ -922,6 +988,8 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
           observation.setRecordId(savepoint);
           observation.setRestoreRef(savepoint);
           return observation;
+        case STOP_WITH_SAVEPOINT:
+          return observeNativeStop(api, target, step, previous);
         case STOP:
           String stopped = step.getCommand().getProviderInstance();
           JsonObject completed = instance(api, target, step.getProviderJobId(), stopped);
@@ -1096,7 +1164,7 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
       boolean acknowledgedRestart,
       String directRelease)
       throws IOException {
-    if (job == null || (prior == null && (restart || dispatchedAt <= 0))) {
+    if (job == null || dispatchedAt <= 0 || (prior == null && restart)) {
       return null;
     }
     boolean hasPrior = StringUtils.isNotEmpty(prior);
@@ -1119,26 +1187,24 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
     }
     // The response is ordered by descending start time. Never infer uniqueness across a
     // truncated page whose oldest entry could still be a successor.
-    // Steps dispatched by older Consoles only have a local dispatch timestamp. Require the
-    // candidate to start strictly later, since cloud timestamps have second precision.
-    long cutoff = prior == null ? dispatchedAt + 1 : Long.MIN_VALUE;
-    final long earliest = old == null ? cutoff : startedAt(old);
+    // The old instance is only a baseline. A successor must also belong to the dispatch
+    // window. Only a provider-acknowledged restart can include that same cloud second.
+    long cutoff = acknowledgedRestart ? dispatchedAt - dispatchedAt % 1_000 : dispatchedAt + 1;
+    long oldStart = old == null ? 0 : startedAt(old);
+    long earliest = Math.max(cutoff, oldStart);
     if (total > recent.size() && startedAt(recent.get(recent.size() - 1)) >= earliest) {
       return null;
     }
     List<JsonObject> successors =
         recent.stream()
-            .filter(
-                run ->
-                    !same(run, "Id", prior)
-                        && (earliest == Long.MIN_VALUE || startedAt(run) >= earliest))
+            .filter(run -> !same(run, "Id", prior) && startedAt(run) >= earliest)
             .collect(Collectors.toList());
     if (successors.size() != 1) {
       return null;
     }
     JsonObject next = successors.get(0);
     // A tie with the baseline could be another instance already present before dispatch.
-    if (!acknowledgedRestart && old != null && startedAt(next) == earliest) {
+    if (!acknowledgedRestart && old != null && startedAt(next) == oldStart) {
       return null;
     }
     String runtime = text(published, "ApplicationId");
@@ -1237,6 +1303,73 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private String snapshotName(OperationStep step) {
     return "streampark-operation-" + step.getOperationId();
+  }
+
+  private Observation observeNativeStop(
+      VolcengineOpenApi api, Target target, OperationStep step, Observation receipt)
+      throws IOException {
+    if (receipt == null
+        || receipt.getOutcome() != Outcome.WAITING
+        || StringUtils.isBlank(receipt.getRequestId())
+        || (receipt.getJobId() != null && !receipt.getJobId().equals(step.getProviderJobId()))
+        || step.getCommand().getSavepointsBeforeStop() == null
+        || step.getDispatchedAt() <= 0) {
+      return awaiting();
+    }
+    String job = step.getProviderJobId();
+    String instanceId = step.getCommand().getProviderInstance();
+    JsonObject instance = instance(api, target, job, instanceId);
+    if (instance == null || !"STOPPED".equals(runState(instance))) {
+      return awaiting();
+    }
+    List<JsonObject> matches =
+        savepoints(api, job).stream()
+            .filter(point -> isNativeStopSavepoint(step, point, instance))
+            .collect(Collectors.toList());
+    if (matches.size() != 1 || !availableSavepoint(matches.get(0))) {
+      return awaiting();
+    }
+    JsonObject snapshot = matches.get(0);
+    String savepoint = text(snapshot, "SavepointId");
+    Observation observation = Observation.outcome(Outcome.CONFIRMED, null);
+    observation.setJobId(job);
+    observation.setInstanceId(instanceId);
+    observation.setRunState("STOPPED");
+    observation.setRecordId(StringUtils.defaultIfBlank(text(snapshot, "Id"), savepoint));
+    observation.setRestoreRef(savepoint);
+    return observation;
+  }
+
+  private boolean isNativeStopSavepoint(OperationStep step, JsonObject point, JsonObject instance) {
+    String savepoint = text(point, "SavepointId");
+    long dispatchSecond = step.getDispatchedAt() / 1000 * 1000;
+    if (savepoint == null
+        || step.getCommand().getSavepointsBeforeStop().contains(savepoint)
+        || !same(point, "Description", "stop-with-savepoint")
+        || cloudTimestamp(text(point, "CreateTime")) < dispatchSecond) {
+      return false;
+    }
+    String instanceId = step.getCommand().getProviderInstance();
+    String applicationInstanceId = text(point, "ApplicationInstanceId");
+    if (applicationInstanceId != null) {
+      return instanceId.equals(applicationInstanceId);
+    }
+    // ListGWSSavepoint's Id denotes the snapshot record. The managed storage layout
+    // identifies its source deployment at save-points/<date>/<deployment-id>/.
+    String deployment = text(instance, "DeploymentId");
+    String path = text(point, "SavepointPath");
+    if (deployment == null || path == null || !path.startsWith("s3p://volc-flink-meta-")) {
+      return false;
+    }
+    String[] segments = path.split("/");
+    for (int i = 3; i + 3 < segments.length; i++) {
+      if ("save-points".equals(segments[i])
+          && segments[i + 1].matches("[0-9]{8}")
+          && deployment.equals(segments[i + 2])) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private List<JsonObject> savepoints(VolcengineOpenApi api, String job) throws IOException {
@@ -1376,15 +1509,25 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
 
   private JsonObject application(VolcengineOpenApi api, Target target, String id)
       throws IOException {
-    return application(
-        api,
-        target,
-        id,
-        id != null && id.equals(target.getDirectJobId()) ? target.getDirectReleaseId() : null);
+    return application(api, target, id, directRelease(target, id));
+  }
+
+  private String directRelease(Target target, String id) {
+    return id != null && id.equals(target.getDirectJobId()) ? target.getDirectReleaseId() : null;
   }
 
   private JsonObject application(
       VolcengineOpenApi api, Target target, String id, String directRelease) throws IOException {
+    return application(api, target, id, directRelease, false);
+  }
+
+  private JsonObject application(
+      VolcengineOpenApi api,
+      Target target,
+      String id,
+      String directRelease,
+      boolean classifyMissing)
+      throws IOException {
     if (id == null) {
       return null;
     }
@@ -1395,6 +1538,9 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
             Collections.emptyMap(),
             fields("Id", id, "ProjectId", target.getProjectId()));
     reply.checkReadBackoff();
+    if (classifyMissing) {
+      reply.checkPublishedJobMissing(id);
+    }
     JsonObject application = reply.data();
     if (!reply.ok()
         || !scoped(application, target, id)
@@ -1693,7 +1839,19 @@ class VolcengineManagedFlinkProvider implements ManagedFlinkProvider {
   }
 
   private long startedAt(JsonObject run) {
-    return LocalDateTime.parse(text(run, "StartTime"), CLOUD_TIME)
+    return parseCloudTimestamp(text(run, "StartTime"));
+  }
+
+  private long cloudTimestamp(String value) {
+    try {
+      return value == null ? 0 : parseCloudTimestamp(value);
+    } catch (DateTimeParseException | ArithmeticException ignored) {
+      return 0;
+    }
+  }
+
+  private long parseCloudTimestamp(String value) {
+    return LocalDateTime.parse(value, CLOUD_TIME)
         .atZone(ZoneId.of("Asia/Shanghai"))
         .toInstant()
         .toEpochMilli();

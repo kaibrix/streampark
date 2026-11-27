@@ -19,6 +19,8 @@
   import { nextTick, ref, onUnmounted, onMounted } from 'vue';
   import { useAppTableAction } from './hooks/useAppTableAction';
   import { useI18n } from '/@/hooks/web/useI18n';
+  import { usePermission } from '/@/hooks/web/usePermission';
+  import { managedGet } from '/@/api/flink/managedFlink';
   import { ExecModeEnum, JobTypeEnum, OptionStateEnum, ReleaseStateEnum } from '/@/enums/flinkEnum';
   import { useDebounceFn, useTimeoutFn } from '@vueuse/core';
   import {
@@ -62,6 +64,8 @@
     name: 'AppView',
   });
   const { t } = useI18n();
+  const { hasPermission } = usePermission();
+  const managedAvailable = ref(false);
   const searchRef = ref<Recordable>({
     tags: undefined,
     owner: undefined,
@@ -217,6 +221,29 @@
     router.push({ path: '/flink/app/detail', query: { appId: app.id } });
   }
 
+  function canCopyAsManaged() {
+    return (
+      managedAvailable.value &&
+      ['app:view', 'app:detail', 'app:create'].every((permission) => hasPermission(permission))
+    );
+  }
+
+  function copyAsManaged(app: AppListRecord) {
+    router.push({ path: '/flink/app/add', query: { copyFrom: String(app.id) } });
+  }
+
+  function nativeActions(record: AppListRecord) {
+    const actions = getTableActions(record, currentTablePage.value);
+    if (canCopyAsManaged()) {
+      actions.dropDownActions.push({
+        label: t('managedFlink.copyAsManaged'),
+        icon: 'ant-design:copy-outlined',
+        onClick: () => copyAsManaged(record),
+      });
+    }
+    return actions;
+  }
+
   /* Update options data */
   function handleOptionApp(data: {
     type: 'starting' | 'stopping' | 'release' | 'savepointing';
@@ -248,6 +275,12 @@
   }, 2000);
 
   onMounted(() => {
+    if (['app:view', 'app:detail', 'app:create'].every((permission) => hasPermission(permission))) {
+      void managedGet('/environments').then(
+        () => (managedAvailable.value = true),
+        () => (managedAvailable.value = false),
+      );
+    }
     // If there is a page, jump to the page number of the record
     const currentPage = sessionStorage.getItem('appPageNo');
     if (currentPage) {
@@ -427,13 +460,15 @@
             />
           </template>
           <template v-if="column.dataIndex === 'operation'">
-            <Button
-              v-if="record.executionMode === ExecModeEnum.MANAGED_FLINK"
-              type="link"
-              @click="handleJobView(record)"
-              >{{ t('common.detailText') }}</Button
-            >
-            <TableAction v-else v-bind="getTableActions(record, currentTablePage)" />
+            <template v-if="record.executionMode === ExecModeEnum.MANAGED_FLINK">
+              <Button type="link" @click="handleJobView(record)">{{
+                t('common.detailText')
+              }}</Button>
+              <Button v-if="canCopyAsManaged()" type="link" @click="copyAsManaged(record)">
+                {{ t('managedFlink.copyAsManaged') }}
+              </Button>
+            </template>
+            <TableAction v-else v-bind="nativeActions(record)" />
           </template>
         </template>
         <template #insertTable="{ tableContainer }">

@@ -27,6 +27,11 @@ import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Operat
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Outcome;
 import org.apache.streampark.console.core.managedflink.ManagedFlinkModels.Spec;
 
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -58,6 +63,17 @@ public interface ManagedFlinkProvider {
 
   default String specIssue(Spec spec, String engine) {
     return null;
+  }
+
+  default String importArtifact(Context context, String uri, ArtifactCapture capture)
+      throws IOException {
+    throw new ResponseStatusException(
+        HttpStatus.UNPROCESSABLE_ENTITY, "Cloud artifact import is unavailable");
+  }
+
+  @FunctionalInterface
+  interface ArtifactCapture {
+    String capture(long size, InputStream content) throws IOException;
   }
 
   default List<Action> publishSteps(JobType type, boolean hasDraft) {
